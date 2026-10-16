@@ -1,0 +1,67 @@
+{
+  "note": 60,
+  "trials": 3,
+  "duplex": false,
+  "blocksize": 128,
+  "samplerate": 48000,
+  "portaudio_input_latency_s": 0.08841666666666667,
+  "capture_seconds": 4.86,
+  "stream_statuses": [],
+  "detected": 3,
+  "stats": {
+    "n": 3,
+    "mean_ms": 7.33,
+    "std_ms": 0.94,
+    "min_ms": 6.0,
+    "max_ms": 8.0,
+    "p2p_ms": 2.0,
+    "median_ms": 8.0
+  },
+  "stats_raw": {
+    "n": 3,
+    "mean_ms": 4.0,
+    "std_ms": 0.0,
+    "min_ms": 4.0,
+    "max_ms": 4.0,
+    "p2p_ms": 0.0,
+    "median_ms": 4.0
+  },
+  "floor_dbfs": -240.0,
+  "peak_dbfs": -5.7,
+  "rows": [
+    {
+      "trial": 0,
+      "mark": 33381,
+      "latency_ms": 6.0,
+      "latency_raw_ms": 4.0,
+      "peak_dbfs": -5.7,
+      "levels_dbfs": [
+        -16.0,
+        -16.0
+      ]
+    },
+    {
+      "trial": 1,
+      "mark": 91214,
+      "latency_ms": 8.0,
+      "latency_raw_ms": 4.0,
+      "peak_dbfs": -5.7,
+      "levels_dbfs": [
+        -16.0,
+        -16.0
+      ]
+    },
+    {
+      "trial": 2,
+      "mark": 149295,
+      "latency_ms": 8.0,
+      "latency_raw_ms": 4.0,
+      "peak_dbfs": -5.7,
+      "levels_dbfs": [
+        -16.0,
+        -16.0
+      ]
+    }
+  ],
+  "wav": "/Users/tyler/Music/ko-bridge/spike/latency-recheck.wav"
+}

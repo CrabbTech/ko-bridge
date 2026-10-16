@@ -1,0 +1,401 @@
+"""Authoring an EP-133 project: typed specs in, an epsysex JSON document (compiled over the slot's current archive) out.
+
+Pads are addressed the way the device labels them: group A-D and the keypad label "." "0" "enter" "1".."9". The archive's
+pNN numbering and the MIDI note are derived (epsysex midi-reference.md, calibrated on the device):
+
+    label:   .    0   enter  1    2    3    4    5    6    7    8    9
+    note:   +0   +1   +2    +3   +4   +5   +6   +7   +8   +9  +10  +11   (group base: A 36, B 48, C 60, D 72)
+    member: p10  p11  p12   p07  p08  p09  p04  p05  p06  p01  p02  p03
+
+Timing is 96 PPQN: a 16th step is 24 ticks, a bar 384. A pattern event's note is the pitch relative to the pad's root
+note and is also what the device sends out over MIDI, so the default root is the pad's own note and the default event
+note is that root: native pitch unless asked otherwise. Fader lanes take parameter names and 0..1 values.
+"""
+from __future__ import annotations
+
+import base64
+import glob
+import os
+import struct
+from typing import Any, Literal
+
+from epsysex.compile import compile_project
+from epsysex.tar import iter_members, member_payloads
+from pydantic import BaseModel, Field
+
+PPQN = 96
+STEP_TICKS = 24
+BAR_TICKS = 384
+
+Group = Literal["A", "B", "C", "D"]
+PAD_LABELS = (".", "0", "enter", "1", "2", "3", "4", "5", "6", "7", "8", "9")   # by note offset 0..11
+PAD_MEMBER_BY_OFFSET = (10, 11, 12, 7, 8, 9, 4, 5, 6, 1, 2, 3)                   # archive pNN for the same offsets
+GROUP_BASE_NOTE = {"A": 36, "B": 48, "C": 60, "D": 72}
+PadLabel = Literal[".", "0", "enter", "1", "2", "3", "4", "5", "6", "7", "8", "9"]
+
+FADER_PARAMETERS = ("level", "pitch", "time", "lowpass", "highpass", "fx", "attack", "release", "pan", "tune", "velocity", "modulation")
+FaderParameter = Literal["level", "pitch", "time", "lowpass", "highpass", "fx", "attack", "release", "pan", "tune", "velocity", "modulation"]
+TIME_MODES = ("off", "bpm", "bar", "reverse")
+PLAY_MODES = ("oneshot", "key", "legato")
+FX_TYPES = ("off", "delay", "reverb", "distortion", "chorus", "filter", "compressor")
+
+
+# ----------------------------------------------------------------------------- pad addressing
+
+def pad_offset(label: str) -> int:
+    label = str(label).lower()
+    if label not in PAD_LABELS:
+        raise ValueError(f"pad {label!r} is not a keypad label; use one of {PAD_LABELS}")
+    return PAD_LABELS.index(label)
+
+
+def pad_member_number(label: str) -> int:
+    """Archive pad number 1-12 (pads/<g>/pNN) for a keypad label."""
+    return PAD_MEMBER_BY_OFFSET[pad_offset(label)]
+
+
+def pad_note(group: str, label: str) -> int:
+    return GROUP_BASE_NOTE[group.upper()] + pad_offset(label)
+
+
+def label_for_member(number: int) -> str:
+    return PAD_LABELS[PAD_MEMBER_BY_OFFSET.index(number)]
+
+
+def pad_for_note(note: int) -> dict[str, Any]:
+    if not 36 <= note <= 83:
+        raise ValueError(f"note {note} is outside the pad range 36..83")
+    group = "ABCD"[(note - 36) // 12]
+    offset = (note - 36) % 12
+    return {"note": note, "group": group, "pad": PAD_LABELS[offset], "member": f"pads/{group.lower()}/p{PAD_MEMBER_BY_OFFSET[offset]:02d}"}
+
+
+# ----------------------------------------------------------------------------- specs
+
+class PadSpec(BaseModel):
+    """One pad's sound assignment and sound design (the per-project pad record)."""
+    group: Group
+    pad: PadLabel = Field(description='keypad label: "." "0" "enter" or "1".."9"')
+    slot: int = Field(ge=0, le=999, description="sample slot 1-999; 0 clears the pad")
+    trim_start: int = Field(default=0, ge=0, description="frames at the sample's native rate")
+    trim_end: int | None = Field(default=None, ge=1, description="trim length in frames; None = the whole sample")
+    sample_bpm: float = Field(default=120.0, ge=1, le=399)
+    amplitude: int = Field(default=100, ge=0, le=200, description="100 = unity, ~0.5 dB per unit below")
+    pitch: int = Field(default=0, ge=-12, le=12, description="semitones")
+    pan: int = Field(default=0, ge=-16, le=16)
+    attack: int = Field(default=0, ge=0, le=255)
+    release: int = Field(default=255, ge=0, le=255, description="255 = play through; lower = decay from note-on in oneshot")
+    time_mode: Literal["off", "bpm", "bar", "reverse"] = "off"
+    choke: bool = Field(default=False, description="member of the single shared mute group")
+    play_mode: Literal["oneshot", "key", "legato"] = "oneshot"
+    root_note: int | None = Field(default=None, ge=0, le=127, description="None = the pad's own MIDI note (native pitch when that note plays)")
+    midi_channel: int = Field(default=0, ge=0, le=16, description="0 = the device's channel setting")
+
+    @property
+    def note(self) -> int:
+        return pad_note(self.group, self.pad)
+
+    @property
+    def root(self) -> int:
+        return self.note if self.root_note is None else self.root_note
+
+
+class NoteEvent(BaseModel):
+    pad: PadLabel
+    step: float | None = Field(default=None, ge=0, description="position in 16th steps from the pattern start (24 ticks each); fractions allowed")
+    tick: int | None = Field(default=None, ge=0, description="position in ticks (96 per beat); alternative to step")
+    note: int | None = Field(default=None, ge=0, le=127, description="None = the pad's root (native pitch); other values repitch")
+    velocity: int = Field(default=100, ge=1, le=127)
+    duration: int = Field(default=24, ge=1, le=BAR_TICKS, description="ticks; audible only in key/legato play modes")
+
+    def tick_value(self) -> int:
+        if self.tick is not None:
+            return int(self.tick)
+        if self.step is not None:
+            return int(round(self.step * STEP_TICKS))
+        raise ValueError("a note event needs step or tick")
+
+
+class LanePoint(BaseModel):
+    step: float | None = Field(default=None, ge=0)
+    tick: int | None = Field(default=None, ge=0)
+    value: float = Field(ge=0.0, le=1.0, description="0..1 of the fader's range")
+
+    def tick_value(self) -> int:
+        if self.tick is not None:
+            return int(self.tick)
+        if self.step is not None:
+            return int(round(self.step * STEP_TICKS))
+        raise ValueError("a lane point needs step or tick")
+
+
+class Lane(BaseModel):
+    """A group-fader automation lane; values latch until the next point and slew over tens of milliseconds."""
+    parameter: FaderParameter
+    points: list[LanePoint]
+
+
+class PatternSpec(BaseModel):
+    group: Group
+    number: int = Field(default=1, ge=1, le=99)
+    bars: int = Field(default=1, ge=1, le=99)
+    events: list[NoteEvent] = []
+    lanes: list[Lane] = []
+
+    @property
+    def member(self) -> str:
+        return f"patterns/{self.group.lower()}{self.number:02d}"
+
+    @property
+    def id(self) -> str:
+        return f"{self.group}{self.number:02d}"
+
+
+class SceneSpec(BaseModel):
+    """Which pattern each group plays; groups left out keep their scene-1 reference (or get an empty pattern)."""
+    patterns: dict[Group, int] = Field(default_factory=dict, description="group -> pattern number")
+    time_signature: list[int] = Field(default=[4, 4], min_length=2, max_length=2)
+
+
+class FxSpec(BaseModel):
+    type: Literal["off", "delay", "reverb", "distortion", "chorus", "filter", "compressor"] = "off"
+    x: float | None = Field(default=None, ge=0, le=1, description="knob X: delay length, reverb length, drive, modulation, cutoff, drive")
+    y: float | None = Field(default=None, ge=0, le=1, description="knob Y: feedback, color, color, feedback, resonance, speed")
+    output_compressor_drive: float | None = Field(default=None, ge=0, le=1)
+    output_compressor_speed: float | None = Field(default=None, ge=0, le=1)
+
+
+class FaderBase(BaseModel):
+    group: Group
+    parameter: FaderParameter
+    value: float = Field(ge=0, le=1)
+
+
+class ProjectSpec(BaseModel):
+    """Everything write_project can change in a slot. Unmentioned members, pads and patterns are preserved."""
+    bpm: float | None = Field(default=None, ge=40, le=399)
+    pads: list[PadSpec] = []
+    patterns: list[PatternSpec] = []
+    scene: SceneSpec | None = Field(default=None, description="set scene 1; None keeps the slot's scenes untouched unless patterns are written")
+    fader_bases: list[FaderBase] = Field(default=[], description="group fader base positions and assignment (settings member)")
+    fx: FxSpec | None = None
+
+
+# ----------------------------------------------------------------------------- archive decoding
+
+def decode_pad(record: bytes) -> dict[str, Any]:
+    return {"slot": struct.unpack_from("<H", record, 1)[0], "midi_channel": record[3],
+            "trim_start": struct.unpack_from("<I", record, 4)[0], "trim_end": struct.unpack_from("<I", record, 8)[0],
+            "sample_bpm": round(struct.unpack_from("<f", record, 12)[0], 2), "amplitude": record[16],
+            "pitch": struct.unpack_from("<b", record, 17)[0], "pan": struct.unpack_from("<b", record, 18)[0],
+            "attack": record[19], "release": record[20], "time_mode": TIME_MODES[record[21]] if record[21] < 4 else record[21],
+            "choke": bool(record[22]), "play_mode": PLAY_MODES[record[23]] if record[23] < 3 else record[23],
+            "root_note": record[24], "record_bytes": len(record)}
+
+
+def decode_pattern(payload: bytes) -> dict[str, Any]:
+    bars, count = payload[1], payload[2]
+    events, lanes = [], {}
+    for i in range(count):
+        r = payload[4 + i * 8: 12 + i * 8]
+        if len(r) < 8:
+            break
+        tick = r[0] | (r[1] << 8)
+        if r[2] == 1 and r[4] == 0 and r[3] < 12:      # automation record
+            lanes.setdefault(FADER_PARAMETERS[r[3]], []).append({"tick": tick, "step": round(tick / STEP_TICKS, 3),
+                                                                  "value": round((r[5] | (r[6] << 8)) / 32767, 4)})
+        else:
+            number = r[2] // 8 + 1
+            events.append({"tick": tick, "step": round(tick / STEP_TICKS, 3), "pad": label_for_member(number) if 1 <= number <= 12 else r[2],
+                           "note": r[3], "velocity": r[4], "duration": r[5] | (r[6] << 8), "flag": r[7]})
+    return {"bars": bars, "records": count, "events": events, "lanes": lanes}
+
+
+def describe(tar: bytes) -> dict[str, Any]:
+    """A readable view of a project archive: assigned pads by label, decoded patterns, scene 1, cursor, BPM, FX."""
+    members = list(iter_members(tar))
+    files = member_payloads(tar)
+    pads = {}
+    for name, p in files.items():
+        if name.startswith("pads/") and len(p) >= 26:
+            d = decode_pad(p)
+            if d["slot"]:
+                group = name.split("/")[1].upper()
+                number = int(name[-2:])
+                label = label_for_member(number)
+                d.update({"note": pad_note(group, label), "member": name})
+                pads[f"{group}:{label}"] = d
+    patterns = {n[9:].upper(): decode_pattern(p) for n, p in files.items() if n.startswith("patterns/") and len(p) >= 4}
+    out: dict[str, Any] = {"bytes": len(tar), "members": len(members), "pads": pads, "patterns": patterns,
+                           "has_settings": "settings" in files, "has_fx_settings": "fx_settings" in files}
+    if "settings" in files and len(files["settings"]) >= 220:
+        st = files["settings"]
+        out["bpm"] = round(struct.unpack_from("<f", st, 4)[0], 2)
+        out["fader_assignment"] = {g: FADER_PARAMETERS[st[216 + i]] if st[216 + i] < 12 else st[216 + i] for i, g in enumerate("ABCD")}
+    if "fx_settings" in files and len(files["fx_settings"]) >= 12:
+        fx = files["fx_settings"]
+        out["fx"] = {"type": FX_TYPES[fx[4]] if fx[4] < 7 else fx[4]}
+        if 1 <= fx[4] <= 6 and len(fx) >= 100:
+            out["fx"]["x"] = round(struct.unpack_from("<f", fx, 12 + (fx[4] - 1) * 4)[0], 3)
+            out["fx"]["y"] = round(struct.unpack_from("<f", fx, 76 + (fx[4] - 1) * 4)[0], 3)
+    if "scenes" in files and len(files["scenes"]) == 712:
+        sc = files["scenes"]
+        cursor = sc[7 + 99 * 6 + 3]
+        scenes = []
+        for i in range(99):
+            chunk = sc[7 + i * 6: 13 + i * 6]
+            if any(chunk[:4]):
+                scenes.append({"scene": i + 1, "patterns": {g: chunk[j] for j, g in enumerate("ABCD")}, "time_signature": [chunk[4], chunk[5]]})
+        out["scenes"] = scenes
+        out["scene_cursor"] = cursor
+        out["song"] = list(sc[7 + 99 * 6 + 12: 7 + 99 * 6 + 12 + sc[7 + 99 * 6 + 11]])
+    return out
+
+
+def scene_one(tar: bytes) -> dict[str, int]:
+    files = member_payloads(tar)
+    if "scenes" in files and len(files["scenes"]) == 712:
+        chunk = files["scenes"][7:11]
+        return {g: chunk[i] for i, g in enumerate("ABCD")}
+    return {}
+
+
+def find_settings_template(backup_root: str) -> bytes | None:
+    """A genuine device-written settings member from the newest backup that has one (never fabricate one)."""
+    candidates = sorted(glob.glob(os.path.join(backup_root, "*", "projects", "P*.tar")) + glob.glob(os.path.join(backup_root, "checkpoints", "*.tar")),
+                        key=os.path.getmtime, reverse=True)
+    for path in candidates:
+        try:
+            files = member_payloads(open(path, "rb").read())
+        except Exception:
+            continue
+        st = files.get("settings")
+        if st is not None and len(st) in (222, 224):
+            return st
+    return None
+
+
+# ----------------------------------------------------------------------------- compiling
+
+def to_document(spec: ProjectSpec, base: bytes, frames_by_slot: dict[int, int], settings_template: bytes | None = None,
+                write_scene_for_patterns: bool = True) -> dict[str, Any]:
+    """Lower a ProjectSpec onto the slot's current archive as an epsysex ep.project.v1 document."""
+    files = member_payloads(base)
+    roots: dict[tuple[str, str], int] = {}
+    for name, p in files.items():
+        if name.startswith("pads/") and len(p) >= 26:
+            group, number = name.split("/")[1].upper(), int(name[-2:])
+            roots[(group, label_for_member(number))] = p[24]
+    doc: dict[str, Any] = {"schema": "ep.project.v1", "product": "ep133"}
+
+    pads = []
+    for pad in spec.pads:
+        roots[(pad.group, pad.pad)] = pad.root
+        trim_end = pad.trim_end
+        if pad.slot and trim_end is None:
+            if pad.slot not in frames_by_slot:
+                raise ValueError(f"slot {pad.slot} has no known length; pass trim_end or let the device layer look the slot up")
+            trim_end = frames_by_slot[pad.slot]
+        pads.append({"group": pad.group, "pad": pad_member_number(pad.pad), "slot": pad.slot, "trimStart": pad.trim_start,
+                     "trimEnd": trim_end or 0, "sampleBpm": pad.sample_bpm, "amplitude": pad.amplitude, "pitch": pad.pitch,
+                     "pan": pad.pan, "attack": pad.attack, "release": pad.release, "timeMode": TIME_MODES.index(pad.time_mode),
+                     "chokeGroup": 1 if pad.choke else 0, "playMode": PLAY_MODES.index(pad.play_mode), "rootNote": pad.root,
+                     "midiChannel": pad.midi_channel})
+    if pads:
+        doc["pads"] = pads
+
+    patterns = []
+    for pat in spec.patterns:
+        events = []
+        for ev in pat.events:
+            tick = ev.tick_value()
+            if tick >= pat.bars * BAR_TICKS:
+                raise ValueError(f"event at tick {tick} is beyond the {pat.bars}-bar pattern {pat.id}")
+            note = ev.note if ev.note is not None else roots.get((pat.group, ev.pad), pad_note(pat.group, ev.pad))
+            events.append({"tick": tick, "pad": pad_member_number(ev.pad), "note": note, "velocity": ev.velocity, "duration": ev.duration})
+        automation = []
+        for lane in pat.lanes:
+            for pt in lane.points:
+                automation.append({"tick": pt.tick_value(), "parameterID": FADER_PARAMETERS.index(lane.parameter),
+                                   "value": int(round(pt.value * 32767))})
+        entry: dict[str, Any] = {"id": pat.id, "bars": pat.bars, "events": events}
+        if automation:
+            entry["automation"] = automation
+        patterns.append(entry)
+
+    scene = spec.scene
+    if scene is None and spec.patterns and write_scene_for_patterns:
+        scene = SceneSpec(patterns={p.group: p.number for p in spec.patterns})
+    if scene is not None:
+        current = scene_one(base)
+        refs = {}
+        for g in "ABCD":
+            refs[g] = scene.patterns.get(g) or current.get(g) or 1
+        authored = {p["id"] for p in patterns}
+        for g in "ABCD":
+            member = f"patterns/{g.lower()}{refs[g]:02d}"
+            if member not in files and f"{g}{refs[g]:02d}" not in authored:
+                patterns.append({"id": f"{g}{refs[g]:02d}", "bars": 1, "events": []})   # a silent group: an empty pattern member
+        doc["scenes"] = [{"groupPatterns": [refs[g] for g in "ABCD"], "timeSignature": list(scene.time_signature)}]
+        doc["song"] = [1]
+        doc["currentScene"] = 1
+    if patterns:
+        doc["patterns"] = patterns
+
+    if spec.bpm is not None or spec.fader_bases:
+        settings: dict[str, Any] = {}
+        if spec.bpm is not None:
+            settings["bpm"] = spec.bpm
+        if spec.fader_bases:
+            settings["groupFaders"] = [{"group": fb.group, "parameter": FADER_PARAMETERS.index(fb.parameter), "baseValue": fb.value} for fb in spec.fader_bases]
+        if "settings" not in files:
+            if settings_template is None:
+                raise ValueError("this slot has no settings member and no device-written template was found in the backups; "
+                                 "take a backup of a project that has one first (never fabricate settings: ERR CLOCK 43)")
+            settings["templateBase64"] = base64.b64encode(settings_template).decode("ascii")
+        doc["settings"] = settings
+
+    if spec.fx is not None:
+        fx: dict[str, Any] = {"type": spec.fx.type}
+        params = {k: v for k, v in (("x", spec.fx.x), ("y", spec.fx.y)) if v is not None}
+        if params:
+            if spec.fx.type == "off":
+                raise ValueError("fx x/y need a non-off fx type")
+            fx["parameters"] = params
+        comp = {k: v for k, v in (("drive", spec.fx.output_compressor_drive), ("speed", spec.fx.output_compressor_speed)) if v is not None}
+        if comp:
+            fx["outputCompressor"] = comp
+        doc["fxSettings"] = fx
+    return doc
+
+
+def compile_spec(spec: ProjectSpec, base: bytes, frames_by_slot: dict[int, int], settings_template: bytes | None = None) -> tuple[bytes, dict[str, Any]]:
+    doc = to_document(spec, base, frames_by_slot, settings_template)
+    return compile_project(doc, base_archive=base), doc
+
+
+def referenced_slots(spec: ProjectSpec) -> set[int]:
+    return {p.slot for p in spec.pads if p.slot}
+
+
+def expected_events(spec_or_desc: dict[str, Any], bpm: float, bars_window: int) -> list[dict[str, Any]]:
+    """Note events of scene 1's patterns, repeated through `bars_window` bars, with their nominal times at `bpm`
+    (from a describe() view)."""
+    desc = spec_or_desc
+    refs = next((s["patterns"] for s in desc.get("scenes", []) if s["scene"] == desc.get("scene_cursor", 1)), None)
+    if refs is None:
+        return []
+    out = []
+    tick_s = 60.0 / (bpm * PPQN)
+    for g, n in refs.items():
+        pat = desc.get("patterns", {}).get(f"{g}{n:02d}")
+        if not pat or not pat["events"]:
+            continue
+        length = pat["bars"] * BAR_TICKS
+        reps = (bars_window * BAR_TICKS + length - 1) // length
+        for rep in range(reps):
+            for ev in pat["events"]:
+                tick = ev["tick"] + rep * length
+                if tick < bars_window * BAR_TICKS:
+                    out.append({"group": g, "pad": ev["pad"], "note": ev["note"], "velocity": ev["velocity"], "tick": tick, "time_s": tick * tick_s})
+    return sorted(out, key=lambda e: (e["tick"], e["note"]))
