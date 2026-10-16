@@ -17,3 +17,6 @@ secrets.env
 .DS_Store
 .idea/
 .vscode/
+
+# the two deterministic test samples (regenerate with scripts/make_test_wavs.py) are small enough to keep
+!assets/*.wav

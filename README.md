@@ -12,9 +12,9 @@ side. A shared core is a later extraction, once both are stable.
 
 ## Status
 
-Spike phase: proving the EP-133 write path (project round-trip, sample upload, USB audio latency,
-pattern timing) on real hardware before any UI work. Results live in
-[docs/spike-results.md](docs/spike-results.md).
+Spike complete (2026-10-16): project round trip, sample upload, 3.5 ms note-to-audio latency and a clocked
+4-bar pattern with a fader lane all verified on real hardware. Results, measured facts and the recommended MCP tool list
+are in [docs/spike-results.md](docs/spike-results.md); the scripts in `scripts/` reproduce every step.
 
 ## Ground rules
 

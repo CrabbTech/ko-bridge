@@ -1,0 +1,147 @@
+{
+  "note": 60,
+  "trials": 10,
+  "duplex": true,
+  "blocksize": 128,
+  "samplerate": 48000,
+  "portaudio_input_latency_s": [
+    0.08841666666666667,
+    0.09008333333333333
+  ],
+  "capture_seconds": 16.3,
+  "stream_statuses": [],
+  "detected": 10,
+  "stats": {
+    "n": 10,
+    "mean_ms": -0.6,
+    "std_ms": 0.92,
+    "min_ms": -2.0,
+    "max_ms": 0.0,
+    "p2p_ms": 2.0,
+    "median_ms": 0.0
+  },
+  "stats_raw": {
+    "n": 10,
+    "mean_ms": 0.0,
+    "std_ms": 0.0,
+    "min_ms": 0.0,
+    "max_ms": 0.0,
+    "p2p_ms": 0.0,
+    "median_ms": 0.0
+  },
+  "floor_dbfs": -240.0,
+  "peak_dbfs": -0.1,
+  "rows": [
+    {
+      "trial": 0,
+      "mark": 33520,
+      "latency_ms": -2.0,
+      "latency_raw_ms": 0.0,
+      "peak_dbfs": -1.4,
+      "levels_dbfs": [
+        -14.3,
+        -14.3
+      ]
+    },
+    {
+      "trial": 1,
+      "mark": 106014,
+      "latency_ms": -2.0,
+      "latency_raw_ms": 0.0,
+      "peak_dbfs": -0.4,
+      "levels_dbfs": [
+        -14.3,
+        -14.3
+      ]
+    },
+    {
+      "trial": 2,
+      "mark": 178364,
+      "latency_ms": -2.0,
+      "latency_raw_ms": 0.0,
+      "peak_dbfs": -0.1,
+      "levels_dbfs": [
+        -14.3,
+        -14.3
+      ]
+    },
+    {
+      "trial": 3,
+      "mark": 250762,
+      "latency_ms": 0.0,
+      "latency_raw_ms": 0.0,
+      "peak_dbfs": -0.6,
+      "levels_dbfs": [
+        -14.3,
+        -14.3
+      ]
+    },
+    {
+      "trial": 4,
+      "mark": 323166,
+      "latency_ms": 0.0,
+      "latency_raw_ms": 0.0,
+      "peak_dbfs": -1.5,
+      "levels_dbfs": [
+        -14.3,
+        -14.3
+      ]
+    },
+    {
+      "trial": 5,
+      "mark": 395660,
+      "latency_ms": 0.0,
+      "latency_raw_ms": 0.0,
+      "peak_dbfs": -1.2,
+      "levels_dbfs": [
+        -14.3,
+        -14.3
+      ]
+    },
+    {
+      "trial": 6,
+      "mark": 467928,
+      "latency_ms": 0.0,
+      "latency_raw_ms": 0.0,
+      "peak_dbfs": -1.5,
+      "levels_dbfs": [
+        -14.3,
+        -14.3
+      ]
+    },
+    {
+      "trial": 7,
+      "mark": 540365,
+      "latency_ms": 0.0,
+      "latency_raw_ms": 0.0,
+      "peak_dbfs": -0.6,
+      "levels_dbfs": [
+        -14.3,
+        -14.3
+      ]
+    },
+    {
+      "trial": 8,
+      "mark": 612756,
+      "latency_ms": 0.0,
+      "latency_raw_ms": 0.0,
+      "peak_dbfs": -0.1,
+      "levels_dbfs": [
+        -14.3,
+        -14.3
+      ]
+    },
+    {
+      "trial": 9,
+      "mark": 684914,
+      "latency_ms": 0.0,
+      "latency_raw_ms": 0.0,
+      "peak_dbfs": -0.6,
+      "levels_dbfs": [
+        -14.3,
+        -14.3
+      ]
+    }
+  ],
+  "wav": "/Users/tyler/Music/ko-bridge/spike/latency-note60-46875-duplex.wav"
+}

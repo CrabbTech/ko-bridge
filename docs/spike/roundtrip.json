@@ -1,0 +1,225 @@
+{
+  "scratch": 9,
+  "started": "2026-10-16 14:00:43",
+  "active_before": {
+    "fid": 4000,
+    "project": 2
+  },
+  "initial": {
+    "checkpoint": "/Users/tyler/Music/ko-bridge/backups/checkpoints/20261016-140045-P09-initial.tar",
+    "bytes": 4096,
+    "read_seconds": 0.23,
+    "archive": {
+      "bytes": 4096,
+      "members": 6,
+      "assigned_pads": {},
+      "patterns": {},
+      "has_scenes": false,
+      "has_settings": false,
+      "has_fx_settings": false
+    }
+  },
+  "A_self_roundtrip": {
+    "project": 9,
+    "label": "roundtrip-self",
+    "checkpoint": "/Users/tyler/Music/ko-bridge/backups/checkpoints/20261016-140045-P09-before-roundtrip-self.tar",
+    "checkpoint_bytes": 4096,
+    "checkpoint_seconds": 0.21,
+    "bytes": 4096,
+    "write_seconds": 2.13,
+    "write_kbps": 1.9,
+    "readback_seconds": 0.22,
+    "readback_bytes": 4096,
+    "identical": true
+  },
+  "B_copy_roundtrip": {
+    "project": 9,
+    "label": "roundtrip-copy",
+    "checkpoint": "/Users/tyler/Music/ko-bridge/backups/checkpoints/20261016-140048-P09-before-roundtrip-copy.tar",
+    "checkpoint_bytes": 4096,
+    "checkpoint_seconds": 0.23,
+    "bytes": 81920,
+    "write_seconds": 6.85,
+    "write_kbps": 11.7,
+    "readback_seconds": 3.42,
+    "readback_bytes": 81920,
+    "identical": true,
+    "reload": {
+      "activeProjectFid": 11000,
+      "activeGroupFid": null,
+      "activePadFid": null,
+      "cycledProjectFid": 3000
+    },
+    "reload_seconds": 2.88,
+    "source": "/Users/tyler/Music/ko-bridge/backups/20261016-132738/projects/P01.tar",
+    "source_archive": {
+      "bytes": 81920,
+      "members": 81,
+      "assigned_pads": {
+        "pads/a/p01": 354,
+        "pads/a/p02": 353,
+        "pads/a/p03": 352,
+        "pads/a/p04": 252,
+        "pads/a/p05": 341,
+        "pads/a/p06": 215,
+        "pads/a/p07": 113,
+        "pads/a/p08": 117,
+        "pads/a/p09": 136,
+        "pads/a/p10": 16,
+        "pads/a/p11": 18,
+        "pads/a/p12": 217,
+        "pads/b/p01": 827,
+        "pads/b/p02": 828,
+        "pads/b/p03": 829,
+        "pads/b/p04": 743,
+        "pads/b/p05": 833,
+        "pads/b/p06": 440,
+        "pads/b/p07": 412,
+        "pads/b/p08": 773,
+        "pads/b/p09": 424,
+        "pads/b/p10": 400,
+        "pads/b/p11": 410,
+        "pads/b/p12": 410,
+        "pads/c/p01": 545,
+        "pads/c/p02": 550,
+        "pads/c/p03": 558,
+        "pads/c/p04": 531,
+        "pads/c/p05": 534,
+        "pads/c/p06": 540,
+        "pads/c/p07": 509,
+        "pads/c/p08": 537,
+        "pads/c/p09": 529,
+        "pads/c/p10": 500,
+        "pads/c/p11": 505,
+        "pads/c/p12": 509,
+        "pads/d/p01": 809,
+        "pads/d/p02": 761,
+        "pads/d/p03": 702,
+        "pads/d/p04": 558,
+        "pads/d/p05": 702,
+        "pads/d/p06": 703,
+        "pads/d/p07": 710,
+        "pads/d/p08": 701,
+        "pads/d/p09": 702,
+        "pads/d/p10": 700,
+        "pads/d/p11": 703,
+        "pads/d/p12": 824
+      },
+      "patterns": {
+        "patterns/a01": {
+          "bars": 4,
+          "records": 15
+        },
+        "patterns/a02": {
+          "bars": 4,
+          "records": 15
+        },
+        "patterns/a03": {
+          "bars": 4,
+          "records": 15
+        },
+        "patterns/a04": {
+          "bars": 4,
+          "records": 15
+        },
+        "patterns/a05": {
+          "bars": 4,
+          "records": 15
+        },
+        "patterns/a11": {
+          "bars": 2,
+          "records": 0
+        },
+        "patterns/a21": {
+          "bars": 4,
+          "records": 0
+        },
+        "patterns/b01": {
+          "bars": 4,
+          "records": 2
+        },
+        "patterns/b02": {
+          "bars": 4,
+          "records": 64
+        },
+        "patterns/b03": {
+          "bars": 4,
+          "records": 13
+        },
+        "patterns/b04": {
+          "bars": 4,
+          "records": 2
+        },
+        "patterns/b05": {
+          "bars": 4,
+          "records": 2
+        },
+        "patterns/b06": {
+          "bars": 4,
+          "records": 2
+        },
+        "patterns/c01": {
+          "bars": 4,
+          "records": 0
+        },
+        "patterns/c03": {
+          "bars": 4,
+          "records": 0
+        },
+        "patterns/c04": {
+          "bars": 4,
+          "records": 0
+        },
+        "patterns/c05": {
+          "bars": 4,
+          "records": 0
+        },
+        "patterns/c06": {
+          "bars": 4,
+          "records": 0
+        },
+        "patterns/d01": {
+          "bars": 4,
+          "records": 45
+        },
+        "patterns/d02": {
+          "bars": 4,
+          "records": 50
+        },
+        "patterns/d03": {
+          "bars": 4,
+          "records": 50
+        },
+        "patterns/d04": {
+          "bars": 4,
+          "records": 50
+        },
+        "patterns/d05": {
+          "bars": 4,
+          "records": 45
+        },
+        "patterns/d06": {
+          "bars": 4,
+          "records": 45
+        }
+      },
+      "has_scenes": true,
+      "has_settings": true,
+      "has_fx_settings": true,
+      "bpm": 126.0,
+      "scene1": [
+        1,
+        1,
+        2,
+        1,
+        4,
+        4
+      ],
+      "scene_cursor": 2
+    }
+  },
+  "active_after": {
+    "fid": 11000,
+    "project": 9
+  }
+}

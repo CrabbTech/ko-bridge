@@ -1,0 +1,460 @@
+{
+  "scratch": 9,
+  "bpm": 120.0,
+  "started": "2026-10-16 14:06:33",
+  "events": [
+    [
+      0,
+      10,
+      60,
+      120
+    ],
+    [
+      192,
+      11,
+      61,
+      100
+    ],
+    [
+      384,
+      10,
+      60,
+      120
+    ],
+    [
+      576,
+      11,
+      61,
+      100
+    ],
+    [
+      768,
+      10,
+      60,
+      120
+    ],
+    [
+      864,
+      10,
+      60,
+      90
+    ],
+    [
+      960,
+      11,
+      61,
+      100
+    ],
+    [
+      1152,
+      10,
+      60,
+      120
+    ],
+    [
+      1344,
+      11,
+      61,
+      100
+    ],
+    [
+      1440,
+      11,
+      61,
+      80
+    ]
+  ],
+  "automation": [
+    {
+      "tick": 0,
+      "parameterID": 3,
+      "value": 32767
+    },
+    {
+      "tick": 384,
+      "parameterID": 3,
+      "value": 14000
+    },
+    {
+      "tick": 768,
+      "parameterID": 3,
+      "value": 32767
+    }
+  ],
+  "write": {
+    "project": 9,
+    "label": "pattern",
+    "checkpoint": "/Users/tyler/Music/ko-bridge/backups/checkpoints/20261016-140639-P09-before-pattern.tar",
+    "checkpoint_bytes": 57856,
+    "checkpoint_seconds": 2.22,
+    "bytes": 60928,
+    "write_seconds": 5.55,
+    "write_kbps": 10.7,
+    "readback_seconds": 2.45,
+    "readback_bytes": 60928,
+    "identical": true,
+    "reload": {
+      "activeProjectFid": 11000,
+      "activeGroupFid": 11200,
+      "activePadFid": 11206,
+      "cycledProjectFid": 3000
+    },
+    "reload_seconds": 2.7
+  },
+  "archive_after": {
+    "bytes": 60928,
+    "members": 61,
+    "assigned_pads": {
+      "pads/a/p01": 856,
+      "pads/a/p02": 959,
+      "pads/a/p03": 921,
+      "pads/a/p04": 964,
+      "pads/a/p05": 508,
+      "pads/a/p06": 504,
+      "pads/a/p07": 109,
+      "pads/a/p08": 823,
+      "pads/a/p09": 803,
+      "pads/a/p10": 16,
+      "pads/a/p11": 136,
+      "pads/a/p12": 806,
+      "pads/b/p01": 446,
+      "pads/b/p02": 451,
+      "pads/b/p03": 456,
+      "pads/b/p04": 410,
+      "pads/b/p05": 436,
+      "pads/b/p06": 441,
+      "pads/b/p07": 416,
+      "pads/b/p08": 421,
+      "pads/b/p09": 426,
+      "pads/b/p10": 401,
+      "pads/b/p11": 406,
+      "pads/b/p12": 411,
+      "pads/c/p01": 546,
+      "pads/c/p02": 551,
+      "pads/c/p03": 556,
+      "pads/c/p04": 531,
+      "pads/c/p05": 536,
+      "pads/c/p06": 541,
+      "pads/c/p07": 516,
+      "pads/c/p08": 521,
+      "pads/c/p09": 526,
+      "pads/c/p10": 600,
+      "pads/c/p11": 601,
+      "pads/c/p12": 511,
+      "pads/d/p01": 802,
+      "pads/d/p02": 803,
+      "pads/d/p03": 804,
+      "pads/d/p04": 752,
+      "pads/d/p05": 751,
+      "pads/d/p06": 748,
+      "pads/d/p07": 800,
+      "pads/d/p08": 801,
+      "pads/d/p09": 750,
+      "pads/d/p10": 748,
+      "pads/d/p11": 750,
+      "pads/d/p12": 748
+    },
+    "patterns": {
+      "patterns/a01": {
+        "bars": 4,
+        "records": 0
+      },
+      "patterns/b01": {
+        "bars": 1,
+        "records": 0
+      },
+      "patterns/c01": {
+        "bars": 4,
+        "records": 13
+      },
+      "patterns/d01": {
+        "bars": 1,
+        "records": 0
+      }
+    },
+    "has_scenes": true,
+    "has_settings": true,
+    "has_fx_settings": true,
+    "bpm": 120.0,
+    "scene1": [
+      1,
+      1,
+      1,
+      1,
+      4,
+      4
+    ],
+    "scene_cursor": 1
+  },
+  "wav": "/Users/tyler/Music/ko-bridge/spike/pattern-120.wav",
+  "expected": [
+    {
+      "tick": 0,
+      "pad": 10,
+      "note": 60,
+      "velocity": 120,
+      "time_s": 0.0,
+      "onset_offset_ms": 2.0,
+      "midi_offset_ms": 0.79
+    },
+    {
+      "tick": 192,
+      "pad": 11,
+      "note": 61,
+      "velocity": 100,
+      "time_s": 1.0,
+      "onset_offset_ms": 2.0,
+      "midi_offset_ms": 1.64
+    },
+    {
+      "tick": 384,
+      "pad": 10,
+      "note": 60,
+      "velocity": 120,
+      "time_s": 2.0,
+      "onset_offset_ms": 2.0,
+      "midi_offset_ms": 1.02
+    },
+    {
+      "tick": 576,
+      "pad": 11,
+      "note": 61,
+      "velocity": 100,
+      "time_s": 3.0,
+      "onset_offset_ms": 2.0,
+      "midi_offset_ms": 1.87
+    },
+    {
+      "tick": 768,
+      "pad": 10,
+      "note": 60,
+      "velocity": 120,
+      "time_s": 4.0,
+      "onset_offset_ms": 2.0,
+      "midi_offset_ms": 1.23
+    },
+    {
+      "tick": 864,
+      "pad": 10,
+      "note": 60,
+      "velocity": 90,
+      "time_s": 4.5,
+      "onset_offset_ms": 2.0,
+      "midi_offset_ms": 1.0
+    },
+    {
+      "tick": 960,
+      "pad": 11,
+      "note": 61,
+      "velocity": 100,
+      "time_s": 5.0,
+      "onset_offset_ms": 2.0,
+      "midi_offset_ms": 1.98
+    },
+    {
+      "tick": 1152,
+      "pad": 10,
+      "note": 60,
+      "velocity": 120,
+      "time_s": 6.0,
+      "onset_offset_ms": 2.0,
+      "midi_offset_ms": 1.68
+    },
+    {
+      "tick": 1344,
+      "pad": 11,
+      "note": 61,
+      "velocity": 100,
+      "time_s": 7.0,
+      "onset_offset_ms": 2.0,
+      "midi_offset_ms": 0.86
+    },
+    {
+      "tick": 1440,
+      "pad": 11,
+      "note": 61,
+      "velocity": 80,
+      "time_s": 7.5,
+      "onset_offset_ms": 2.0,
+      "midi_offset_ms": 1.91
+    },
+    {
+      "tick": 1536,
+      "pad": 10,
+      "note": 60,
+      "velocity": 120,
+      "time_s": 8.0,
+      "onset_offset_ms": 2.0,
+      "midi_offset_ms": 1.68
+    },
+    {
+      "tick": 1728,
+      "pad": 11,
+      "note": 61,
+      "velocity": 100,
+      "time_s": 9.0,
+      "onset_offset_ms": 2.0,
+      "midi_offset_ms": 1.07
+    }
+  ],
+  "audio_onsets_matched": 12,
+  "audio_offset_stats_ms": {
+    "n": 12,
+    "mean_ms": 2.0,
+    "std_ms": 0.0,
+    "min_ms": 2.0,
+    "max_ms": 2.0,
+    "p2p_ms": 0.0,
+    "median_ms": 2.0
+  },
+  "audio_offset_relative_to_first_ms": {
+    "n": 12,
+    "mean_ms": 0.0,
+    "std_ms": 0.0,
+    "min_ms": 0.0,
+    "max_ms": 0.0,
+    "p2p_ms": 0.0,
+    "median_ms": 0.0
+  },
+  "all_onsets_s": [
+    0.001,
+    1.003,
+    2.001,
+    3.003,
+    4.003,
+    4.501,
+    5.003,
+    6.003,
+    7.001,
+    7.503,
+    8.003,
+    9.001
+  ],
+  "silent_spans_s": [
+    [
+      -0.8,
+      0.0
+    ],
+    [
+      9.99,
+      10.98
+    ]
+  ],
+  "peak_dbfs": -0.0,
+  "clock_jitter_ms": {
+    "n": 479,
+    "mean_ms": 0.0,
+    "std_ms": 0.11,
+    "min_ms": -0.27,
+    "max_ms": 0.28,
+    "p2p_ms": 0.55,
+    "median_ms": 0.0
+  },
+  "midi_note_ons": [
+    {
+      "time_s": 0.0008,
+      "note": 60,
+      "velocity": 120,
+      "channel": 1
+    },
+    {
+      "time_s": 1.0016,
+      "note": 61,
+      "velocity": 100,
+      "channel": 1
+    },
+    {
+      "time_s": 2.001,
+      "note": 60,
+      "velocity": 120,
+      "channel": 1
+    },
+    {
+      "time_s": 3.0019,
+      "note": 61,
+      "velocity": 100,
+      "channel": 1
+    },
+    {
+      "time_s": 4.0012,
+      "note": 60,
+      "velocity": 120,
+      "channel": 1
+    },
+    {
+      "time_s": 4.501,
+      "note": 60,
+      "velocity": 90,
+      "channel": 1
+    },
+    {
+      "time_s": 5.002,
+      "note": 61,
+      "velocity": 100,
+      "channel": 1
+    },
+    {
+      "time_s": 6.0017,
+      "note": 60,
+      "velocity": 120,
+      "channel": 1
+    },
+    {
+      "time_s": 7.0009,
+      "note": 61,
+      "velocity": 100,
+      "channel": 1
+    },
+    {
+      "time_s": 7.5019,
+      "note": 61,
+      "velocity": 80,
+      "channel": 1
+    },
+    {
+      "time_s": 8.0017,
+      "note": 60,
+      "velocity": 120,
+      "channel": 1
+    },
+    {
+      "time_s": 9.0011,
+      "note": 61,
+      "velocity": 100,
+      "channel": 1
+    }
+  ],
+  "midi_offset_stats_ms": {
+    "n": 12,
+    "mean_ms": 1.39,
+    "std_ms": 0.42,
+    "min_ms": 0.79,
+    "max_ms": 1.98,
+    "p2p_ms": 1.19,
+    "median_ms": 1.44
+  },
+  "audio_onset_minus_midi_arrival_ms": {
+    "n": 12,
+    "mean_ms": 0.0,
+    "std_ms": 0.0,
+    "min_ms": 0.0,
+    "max_ms": 0.0,
+    "p2p_ms": 0.0,
+    "median_ms": 0.0
+  },
+  "audio_onset_minus_midi_arrival_values": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "midi_other": []
+}

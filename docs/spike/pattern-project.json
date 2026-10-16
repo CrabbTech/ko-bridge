@@ -1,0 +1,130 @@
+{
+  "schema": "ep.project.v1",
+  "product": "ep133",
+  "patterns": [
+    {
+      "id": "C01",
+      "bars": 4,
+      "events": [
+        {
+          "tick": 0,
+          "pad": 10,
+          "note": 60,
+          "velocity": 120,
+          "duration": 24
+        },
+        {
+          "tick": 192,
+          "pad": 11,
+          "note": 61,
+          "velocity": 100,
+          "duration": 24
+        },
+        {
+          "tick": 384,
+          "pad": 10,
+          "note": 60,
+          "velocity": 120,
+          "duration": 24
+        },
+        {
+          "tick": 576,
+          "pad": 11,
+          "note": 61,
+          "velocity": 100,
+          "duration": 24
+        },
+        {
+          "tick": 768,
+          "pad": 10,
+          "note": 60,
+          "velocity": 120,
+          "duration": 24
+        },
+        {
+          "tick": 864,
+          "pad": 10,
+          "note": 60,
+          "velocity": 90,
+          "duration": 24
+        },
+        {
+          "tick": 960,
+          "pad": 11,
+          "note": 61,
+          "velocity": 100,
+          "duration": 24
+        },
+        {
+          "tick": 1152,
+          "pad": 10,
+          "note": 60,
+          "velocity": 120,
+          "duration": 24
+        },
+        {
+          "tick": 1344,
+          "pad": 11,
+          "note": 61,
+          "velocity": 100,
+          "duration": 24
+        },
+        {
+          "tick": 1440,
+          "pad": 11,
+          "note": 61,
+          "velocity": 80,
+          "duration": 24
+        }
+      ],
+      "automation": [
+        {
+          "tick": 0,
+          "parameterID": 3,
+          "value": 32767
+        },
+        {
+          "tick": 384,
+          "parameterID": 3,
+          "value": 14000
+        },
+        {
+          "tick": 768,
+          "parameterID": 3,
+          "value": 32767
+        }
+      ]
+    },
+    {
+      "id": "B01",
+      "bars": 1,
+      "events": []
+    },
+    {
+      "id": "D01",
+      "bars": 1,
+      "events": []
+    }
+  ],
+  "scenes": [
+    {
+      "groupPatterns": [
+        1,
+        1,
+        1,
+        1
+      ],
+      "timeSignature": [
+        4,
+        4
+      ]
+    }
+  ],
+  "song": [
+    1
+  ],
+  "currentScene": 1,
+  "settings": {
+    "bpm": 120.0
+  }
+}

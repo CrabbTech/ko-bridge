@@ -90,9 +90,16 @@ def main() -> int:
     dev = find_audio_input("EP-133")
     sr = 48000
     clocks = args.bars_to_clock * 4 * 24
-    with Midi("EP-133") as midi:
+    rec = Recorder(dev["index"], channels=2, samplerate=sr, blocksize=128, duplex=args.duplex)
+    midi_marks = []
+
+    def on_midi(_t, msg):  # mark the audio timeline when the device's own note-on arrives
+        if msg.type == "note_on" and msg.velocity > 0 and rec._stream is not None:
+            midi_marks.append((rec.mark(f"midi{len(midi_marks)}"), msg.note))
+
+    with Midi("EP-133", on_message=on_midi) as midi:
         midi.capture_start()
-        rec = Recorder(dev["index"], channels=2, samplerate=sr, blocksize=128, duplex=args.duplex).start()
+        rec.start()
         try:
             time.sleep(0.7)
             driver = ClockDriver(midi, args.bpm, clocks=clocks, send_stop=True, on_start=lambda: rec.mark("start"))
@@ -127,6 +134,23 @@ def main() -> int:
         e["onset_offset_ms"] = None if f is None else round((f - es) / sr * 1000.0, 2)
         if f is not None:
             offsets.append(e["onset_offset_ms"])
+    # sub-millisecond onsets: first high-passed sample above -30 dBFS within 6 ms of the frame-quantized onset
+    # (the high-pass keeps a still-ringing 880/440 Hz tail from the previous hit below the threshold)
+    absx = np.abs(hp)
+    for e, f in zip(expected, found):
+        e["onset_fine_ms"] = None
+        if f is not None:
+            seg = absx[max(0, f - 288): f + 288]
+            hits = np.nonzero(seg > 0.0316)[0]
+            if len(hits):
+                fine = max(0, f - 288) + int(hits[0])
+                e["onset_fine_ms"] = round((fine - (start_sample + int(round(e["time_s"] * sr)))) / sr * 1000.0, 3)
+    fine_vals = [e["onset_fine_ms"] for e in expected if e["onset_fine_ms"] is not None]
+    report["audio_offset_fine_stats_ms"] = an.stats_ms(fine_vals)
+    if fine_vals:
+        report["audio_offset_fine_relative_to_first_ms"] = an.stats_ms([v - fine_vals[0] for v in fine_vals])
+    report["start_sample"] = start_sample
+    report["midi_marks"] = midi_marks
     report["expected"] = expected
     report["audio_onsets_matched"] = len(offsets)
     report["audio_offset_stats_ms"] = an.stats_ms(offsets)
@@ -146,6 +170,17 @@ def main() -> int:
         if cands:
             midi_offsets.append(e["midi_offset_ms"])
     report["midi_offset_stats_ms"] = an.stats_ms(midi_offsets)
+    # audio onset minus the arrival of the device's own note-on, both on the audio clock: a cross-check of the clock base
+    audio_vs_midi = []
+    for ms, note in midi_marks:
+        s_on = an.onset_sample(hp, sr, start=max(0, ms - int(0.03 * sr)), floor_window_ms=30.0)
+        if s_on is not None and s_on < ms + int(0.1 * sr):
+            seg = absx[max(0, s_on - 288): s_on + 288]
+            hits = np.nonzero(seg > 0.0316)[0]
+            fine = max(0, s_on - 288) + int(hits[0]) if len(hits) else s_on
+            audio_vs_midi.append(round((fine - ms) / sr * 1000.0, 3))
+    report["audio_onset_minus_midi_arrival_ms"] = an.stats_ms(audio_vs_midi)
+    report["audio_onset_minus_midi_arrival_values"] = audio_vs_midi
     report["midi_other"] = [{"time_s": round(t - t0, 4), "msg": str(m)} for t, m in midi_events if not (m.type in ("note_on", "note_off"))][:20]
     save_json(OUT / f"{args.label}.json", report)
     print(json.dumps({k: v for k, v in report.items() if k not in ("expected", "midi_note_ons", "events", "automation")}, indent=1, default=str))

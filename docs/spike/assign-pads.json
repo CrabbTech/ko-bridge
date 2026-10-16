@@ -1,0 +1,32 @@
+{
+  "schema": "ep.project.v1",
+  "product": "ep133",
+  "pads": [
+    {
+      "group": "C",
+      "pad": 10,
+      "slot": 600,
+      "trimStart": 0,
+      "trimEnd": 93750,
+      "sampleBpm": 120,
+      "amplitude": 100,
+      "release": 255,
+      "timeMode": 0,
+      "playMode": 0,
+      "rootNote": 60
+    },
+    {
+      "group": "C",
+      "pad": 11,
+      "slot": 601,
+      "trimStart": 0,
+      "trimEnd": 78750,
+      "sampleBpm": 120,
+      "amplitude": 100,
+      "release": 255,
+      "timeMode": 0,
+      "playMode": 0,
+      "rootNote": 61
+    }
+  ]
+}

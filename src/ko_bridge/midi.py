@@ -21,7 +21,8 @@ def find_port(names: list[str], hint: str = DEFAULT_NAME) -> str | None:
 
 
 class Midi:
-    def __init__(self, hint: str = DEFAULT_NAME, channel: int = 0):
+    def __init__(self, hint: str = DEFAULT_NAME, channel: int = 0, on_message=None):
+        self.on_message_hook = on_message  # called from the input thread with (perf_counter, message)
         self.out_name = find_port(mido.get_output_names(), hint)
         self.in_name = find_port(mido.get_input_names(), hint)
         if self.out_name is None or self.in_name is None:
@@ -54,9 +55,12 @@ class Midi:
     def _on_message(self, msg: mido.Message) -> None:
         if msg.type == "sysex":
             return
+        now = time.perf_counter()
         with self._lock:
             if self._capture is not None:
-                self._capture.append((time.perf_counter(), msg))
+                self._capture.append((now, msg))
+        if self.on_message_hook is not None:
+            self.on_message_hook(now, msg)
 
     def capture_start(self) -> None:
         with self._lock:
