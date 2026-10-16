@@ -181,3 +181,36 @@ from running the tests against the device:
   -30 dBFS), consistent with the spike's 3.0-4.2 ms burst-crossing figure.
 
 Human steps added: one power cycle (hold the power switch off, wait, power on) after the timed-out session.
+
+## Addendum: first songs, the sample library, song mode (same day, later)
+
+- **A jungle track through the server.** `scripts/jungle.py` (170 BPM, E minor, factory sounds, one 4-bar scene) and
+  `scripts/jungle_song.py` (four scenes: intro, drop, breakdown with a melody, second drop; song order 1-2-3-4-2) were
+  written to P9 with the normal checkpoint, write, readback, reload cycle (61,440 and 71,680 bytes, identical). Under the
+  Mac's clock the device returned exactly the expected note-ons (282 for eight bars of the drop, 78 for four bars of the
+  breakdown), transpositions included. Sounds were chosen from TE's display names (read from the backup's slot metadata,
+  since FILE LIST only carries node names) and the key was set by measuring the samples' pitch.
+- **Companion sample library** (`ko_bridge.library`): 613 sounds indexed in about a second from the backup PCM, with
+  measured length, attack, decay, sustain, brightness, pitch and confidence, low/high energy shares; a category from the
+  name where TE's names say something (283 sounds), otherwise guessed from features and bank (327, marked "guessed");
+  descriptors; free tags; search by words, labels, length, pitch class, bank. Pitch estimation agrees with TE's
+  `sound.rootnote` metadata on pitch class for the bass and melodic banks once the autocorrelation search starts past the
+  first dip (the first version read 60 Hz subs as 2 kHz and, with an "octave rule", the reese an octave low; for a
+  periodic tone the autocorrelation at twice the period is as high as at the period, so no such rule is safe). Events
+  can now be written in concert pitch (`concert: "E4"`) and the bridge computes the note byte from the sample's pitch.
+- **Fader slew confirmed in use:** the low-pass lane shaped the drop as written; automation placed on the same tick as a
+  hit does not reach that hit.
+- **Song mode plays the written order.** With MIDI clock set back to internal (SHIFT+ERASE, 1 0 0, MAIN), hold MAIN +
+  ENTER opens the song list editor and SHIFT+PLAY plays the song from the start; the device ran the five positions at
+  169.1 BPM by its note stream (170 nominal), stopped by itself after the last position, and the recorded MIDI shows
+  intro-like, drop-like, breakdown-like and drop-like positions in the written order. The Mac's START still plays only
+  the cursor scene, as the epsysex docs say. **Start burst:** at the first SHIFT+PLAY the device emitted about 140
+  note-ons within 50 ms (several bars' worth of hats and shakers) and the intro position came out two bars short; the
+  rest played normally. The epsysex docs report note floods when transport starts soon after a write; here the last FILE
+  session was minutes earlier, so the cause is open (a second start was not taken). `scripts/record_song.py` records a
+  song-mode run from its first note, measures the tempo from the hats, and flags such a burst.
+- **Mix:** per-band RMS over the recording put the sub 25-30 dB above the hats in the first mix; raising the hats and
+  shaker and lowering the reese and sub by 6-18 amplitude units brought the high band up 6 dB. A per-group mix report
+  and MIDI-based grading for dense beats are proposed as follow-ups.
+- Device state at the end: P9 holds the four-scene song (cursor on the drop), slots 600/601 hold the spike's test tones,
+  MIDI clock is internal (100) after the song-mode test, P2 was the active project before the day's work.
