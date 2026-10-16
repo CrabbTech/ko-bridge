@@ -16,6 +16,7 @@ from __future__ import annotations
 import base64
 import glob
 import os
+import re
 import struct
 from typing import Any, Literal
 
@@ -100,11 +101,31 @@ class PadSpec(BaseModel):
         return self.note if self.root_note is None else self.root_note
 
 
+NOTE_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
+FLATS = {"DB": "C#", "EB": "D#", "GB": "F#", "AB": "G#", "BB": "A#"}
+
+
+def note_number(name: str) -> int:
+    """MIDI number of a note name such as "E3", "Bb2", "F#4" (C4 = 60)."""
+    m = re.fullmatch(r"\s*([A-Ga-g])([#b]?)(-?\d+)\s*", str(name))
+    if not m:
+        raise ValueError(f"{name!r} is not a note name like E3 or Bb2")
+    letter = (m.group(1).upper() + ("#" if m.group(2) == "#" else "")).upper()
+    if m.group(2) == "b":
+        letter = FLATS[(m.group(1).upper() + "B")]
+    return NOTE_NAMES.index(letter) + 12 * (int(m.group(3)) + 1)
+
+
 class NoteEvent(BaseModel):
+    """One hit. Pitch, three ways: `note` (the raw byte, relative to the pad's root), `semitones` (offset from the pad's
+    native pitch), or `concert` (a note name the sound should actually sound at, resolved through the library's measured
+    pitch of the sample). Leaving all three out plays the sample at its native pitch."""
     pad: PadLabel
     step: float | None = Field(default=None, ge=0, description="position in 16th steps from the pattern start (24 ticks each); fractions allowed")
     tick: int | None = Field(default=None, ge=0, description="position in ticks (96 per beat); alternative to step")
-    note: int | None = Field(default=None, ge=0, le=127, description="None = the pad's root (native pitch); other values repitch")
+    note: int | None = Field(default=None, ge=0, le=127, description="raw note byte: the pad's root = native pitch; other values repitch")
+    semitones: int | None = Field(default=None, ge=-60, le=60, description="offset from the pad's native pitch; alternative to note")
+    concert: str | None = Field(default=None, description='note name the sound should sound at, e.g. "E3" (needs the sample pitch from the library)')
     velocity: int = Field(default=100, ge=1, le=127)
     duration: int = Field(default=24, ge=1, le=BAR_TICKS, description="ticks; audible only in key/legato play modes")
 
@@ -152,7 +173,7 @@ class PatternSpec(BaseModel):
 
 
 class SceneSpec(BaseModel):
-    """Which pattern each group plays; groups left out keep their scene-1 reference (or get an empty pattern)."""
+    """Which pattern each group plays; groups left out keep that scene's current reference (or scene 1's, or an empty pattern)."""
     patterns: dict[Group, int] = Field(default_factory=dict, description="group -> pattern number")
     time_signature: list[int] = Field(default=[4, 4], min_length=2, max_length=2)
 
@@ -177,6 +198,9 @@ class ProjectSpec(BaseModel):
     pads: list[PadSpec] = []
     patterns: list[PatternSpec] = []
     scene: SceneSpec | None = Field(default=None, description="set scene 1; None keeps the slot's scenes untouched unless patterns are written")
+    scenes: list[SceneSpec] = Field(default=[], description="scenes 1..N in order (an arrangement); overrides `scene`")
+    song: list[int] = Field(default=[], description="song order as 1-based scene numbers, played by the device's own song mode")
+    current_scene: int = Field(default=1, ge=1, le=99, description="the scene external MIDI START plays")
     fader_bases: list[FaderBase] = Field(default=[], description="group fader base positions and assignment (settings member)")
     fx: FxSpec | None = None
 
@@ -252,12 +276,18 @@ def describe(tar: bytes) -> dict[str, Any]:
     return out
 
 
-def scene_one(tar: bytes) -> dict[str, int]:
+def scene_refs(tar: bytes, scene: int = 1) -> dict[str, int]:
+    """Scene `scene` (1-based) group references from an archive's scenes member, {} when absent or undefined."""
     files = member_payloads(tar)
     if "scenes" in files and len(files["scenes"]) == 712:
-        chunk = files["scenes"][7:11]
-        return {g: chunk[i] for i, g in enumerate("ABCD")}
+        chunk = files["scenes"][7 + (scene - 1) * 6: 11 + (scene - 1) * 6]
+        if any(chunk):
+            return {g: chunk[i] for i, g in enumerate("ABCD")}
     return {}
+
+
+def scene_one(tar: bytes) -> dict[str, int]:
+    return scene_refs(tar, 1)
 
 
 def find_settings_template(backup_root: str) -> bytes | None:
@@ -278,19 +308,24 @@ def find_settings_template(backup_root: str) -> bytes | None:
 # ----------------------------------------------------------------------------- compiling
 
 def to_document(spec: ProjectSpec, base: bytes, frames_by_slot: dict[int, int], settings_template: bytes | None = None,
-                write_scene_for_patterns: bool = True) -> dict[str, Any]:
-    """Lower a ProjectSpec onto the slot's current archive as an epsysex ep.project.v1 document."""
+                write_scene_for_patterns: bool = True, pitch_by_slot: dict[int, float] | None = None) -> dict[str, Any]:
+    """Lower a ProjectSpec onto the slot's current archive as an epsysex ep.project.v1 document.
+
+    `pitch_by_slot` gives each sample's native sounding pitch as a MIDI number (from the library) for `concert` events."""
     files = member_payloads(base)
     roots: dict[tuple[str, str], int] = {}
+    slots: dict[tuple[str, str], int] = {}
     for name, p in files.items():
         if name.startswith("pads/") and len(p) >= 26:
             group, number = name.split("/")[1].upper(), int(name[-2:])
             roots[(group, label_for_member(number))] = p[24]
+            slots[(group, label_for_member(number))] = struct.unpack_from("<H", p, 1)[0]
     doc: dict[str, Any] = {"schema": "ep.project.v1", "product": "ep133"}
 
     pads = []
     for pad in spec.pads:
         roots[(pad.group, pad.pad)] = pad.root
+        slots[(pad.group, pad.pad)] = pad.slot
         trim_end = pad.trim_end
         if pad.slot and trim_end is None:
             if pad.slot not in frames_by_slot:
@@ -311,7 +346,22 @@ def to_document(spec: ProjectSpec, base: bytes, frames_by_slot: dict[int, int], 
             tick = ev.tick_value()
             if tick >= pat.bars * BAR_TICKS:
                 raise ValueError(f"event at tick {tick} is beyond the {pat.bars}-bar pattern {pat.id}")
-            note = ev.note if ev.note is not None else roots.get((pat.group, ev.pad), pad_note(pat.group, ev.pad))
+            root = roots.get((pat.group, ev.pad), pad_note(pat.group, ev.pad))
+            if ev.note is not None:
+                note = ev.note
+            elif ev.semitones is not None:
+                note = root + ev.semitones
+            elif ev.concert is not None:
+                slot = slots.get((pat.group, ev.pad))
+                native = (pitch_by_slot or {}).get(slot) if slot else None
+                if native is None:
+                    raise ValueError(f"event on {pat.group} {ev.pad!r} asks for concert pitch {ev.concert} but the library has no pitch for slot {slot}; "
+                                     "use semitones or note, or index the slot (sync_library)")
+                note = root + int(round(note_number(ev.concert) - native))
+            else:
+                note = root
+            if not 0 <= note <= 127:
+                raise ValueError(f"event on {pat.group} {ev.pad!r} resolves to note {note}, outside 0..127")
             events.append({"tick": tick, "pad": pad_member_number(ev.pad), "note": note, "velocity": ev.velocity, "duration": ev.duration})
         automation = []
         for lane in pat.lanes:
@@ -323,22 +373,34 @@ def to_document(spec: ProjectSpec, base: bytes, frames_by_slot: dict[int, int], 
             entry["automation"] = automation
         patterns.append(entry)
 
-    scene = spec.scene
-    if scene is None and spec.patterns and write_scene_for_patterns:
-        scene = SceneSpec(patterns={p.group: p.number for p in spec.patterns})
-    if scene is not None:
-        current = scene_one(base)
-        refs = {}
-        for g in "ABCD":
-            refs[g] = scene.patterns.get(g) or current.get(g) or 1
+    scene_list = list(spec.scenes)
+    if not scene_list:
+        scene = spec.scene
+        if scene is None and spec.patterns and write_scene_for_patterns:
+            scene = SceneSpec(patterns={p.group: p.number for p in spec.patterns})
+        if scene is not None:
+            scene_list = [scene]
+    if scene_list:
         authored = {p["id"] for p in patterns}
-        for g in "ABCD":
-            member = f"patterns/{g.lower()}{refs[g]:02d}"
-            if member not in files and f"{g}{refs[g]:02d}" not in authored:
-                patterns.append({"id": f"{g}{refs[g]:02d}", "bars": 1, "events": []})   # a silent group: an empty pattern member
-        doc["scenes"] = [{"groupPatterns": [refs[g] for g in "ABCD"], "timeSignature": list(scene.time_signature)}]
-        doc["song"] = [1]
-        doc["currentScene"] = 1
+        chunks = []
+        fallback = scene_one(base)
+        for index, scene in enumerate(scene_list, start=1):
+            current = scene_refs(base, index) or fallback
+            refs = {g: scene.patterns.get(g) or current.get(g) or 1 for g in "ABCD"}
+            for g in "ABCD":
+                member = f"patterns/{g.lower()}{refs[g]:02d}"
+                if member not in files and f"{g}{refs[g]:02d}" not in authored:
+                    patterns.append({"id": f"{g}{refs[g]:02d}", "bars": 1, "events": []})   # a silent group: an empty pattern member
+                    authored.add(f"{g}{refs[g]:02d}")
+            chunks.append({"groupPatterns": [refs[g] for g in "ABCD"], "timeSignature": list(scene.time_signature)})
+        song = [int(s) for s in spec.song] or [1]
+        if any(s < 1 or s > len(chunks) for s in song):
+            raise ValueError(f"song {song} references a scene outside 1..{len(chunks)}")
+        if spec.current_scene > len(chunks):
+            raise ValueError(f"current_scene {spec.current_scene} is outside the {len(chunks)} scenes written")
+        doc["scenes"] = chunks
+        doc["song"] = song
+        doc["currentScene"] = spec.current_scene
     if patterns:
         doc["patterns"] = patterns
 
@@ -369,9 +431,14 @@ def to_document(spec: ProjectSpec, base: bytes, frames_by_slot: dict[int, int], 
     return doc
 
 
-def compile_spec(spec: ProjectSpec, base: bytes, frames_by_slot: dict[int, int], settings_template: bytes | None = None) -> tuple[bytes, dict[str, Any]]:
-    doc = to_document(spec, base, frames_by_slot, settings_template)
+def compile_spec(spec: ProjectSpec, base: bytes, frames_by_slot: dict[int, int], settings_template: bytes | None = None,
+                 pitch_by_slot: dict[int, float] | None = None) -> tuple[bytes, dict[str, Any]]:
+    doc = to_document(spec, base, frames_by_slot, settings_template, pitch_by_slot=pitch_by_slot)
     return compile_project(doc, base_archive=base), doc
+
+
+def concert_slots(spec: ProjectSpec) -> bool:
+    return any(ev.concert is not None for pat in spec.patterns for ev in pat.events)
 
 
 def referenced_slots(spec: ProjectSpec) -> set[int]:

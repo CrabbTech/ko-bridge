@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import functools
+import glob
 import importlib.metadata
 import math
 import os
@@ -25,6 +26,7 @@ from pydantic import BaseModel, Field as Param
 
 from . import config as C
 from . import knowledge, player
+from . import library as L
 from . import project as PJ
 from .audio import find_audio_input
 from . import ep133 as E
@@ -302,8 +304,15 @@ def list_sounds(min_slot: Slot = 1, max_slot: Slot = 999, refresh: bool = True) 
     else:
         nodes, listed_at = lib["sounds"], lib["time"]
     occupied = {int(n["id"]) for n in nodes}
-    rows = [{"slot": int(n["id"]), "name": n["name"], "kb": round(int(n["size"]) / 1024, 1)} for n in sorted(nodes, key=lambda n: int(n["id"]))
-            if min_slot <= int(n["id"]) <= max_slot]
+    lib = L.Library()
+    rows = []
+    for n in sorted(nodes, key=lambda n: int(n["id"])):
+        slot = int(n["id"])
+        if not min_slot <= slot <= max_slot:
+            continue
+        rec = lib.get(slot)
+        rows.append({"slot": slot, "name": (rec or {}).get("name") or n["name"], "category": (rec or {}).get("category"),
+                     "kb": round(int(n["size"]) / 1024, 1)})
     free = [s for s in range(600, 1000) if s not in occupied]
     return {"listed_at": listed_at, "occupied": len(occupied), "total_mb": round(sum(int(n["size"]) for n in nodes) / 1e6, 2),
             "capacity_mb": 128, "sounds": rows, "free_slots_600_plus": free[:30], "free_count_600_plus": len(free),
@@ -348,7 +357,9 @@ def upload_sound(wav_path: str, slot: Slot | None = None, name: str | None = Non
             r = ep.upload_sound(target, pcm, name=label, samplerate=samplerate, channels=info["channels"],
                                 acknowledge_overwrite=acknowledge_overwrite, occupied=occupied)
             ep.list_sounds()   # refresh the cache
-            r.update({"wav": wav_path, "source": info, "pad_hint": f"assign with assign_pads: slot {target}, trim_end {r['frames']} (or leave trim_end null)"})
+            rec = L.Library().note_upload(target, pcm, samplerate, info["channels"], label, wav_path)
+            r.update({"wav": wav_path, "source": info, "library": L.Library.row(rec),
+                      "pad_hint": f"assign with assign_pads: slot {target}, trim_end {r['frames']} (or leave trim_end null)"})
             return r
     return _run_or_job("upload_sound", label, expected, wait, work)
 
@@ -363,6 +374,7 @@ def upload_sounds(wav_paths: list[str], start_slot: Slot | None = None, samplera
 
     def work(job: Job | None) -> dict[str, Any]:
         results = []
+        lib = L.Library()
         with _device() as (ep, _c):
             occupied = {int(n["id"]) for n in ep.list_sounds()}
             free = [s for s in ep.free_slots(occupied) if start_slot is None or s >= start_slot]
@@ -374,7 +386,8 @@ def upload_sounds(wav_paths: list[str], start_slot: Slot | None = None, samplera
                 _stage(job, f"uploading {i + 1}/{len(prepared)}: {label} -> slot {target}")
                 r = ep.upload_sound(target, pcm, name=label, samplerate=samplerate, channels=info["channels"], occupied=occupied)
                 occupied.add(target)
-                r.update({"wav": path, "source": info})
+                rec = lib.note_upload(target, pcm, samplerate, info["channels"], label, path)
+                r.update({"wav": path, "source": info, "category": rec["category"]})
                 results.append(r)
             ep.list_sounds()
         return {"uploaded": results, "slots": [r["slot"] for r in results], "bytes": sum(r["bytes"] for r in results),
@@ -386,7 +399,10 @@ def upload_sounds(wav_paths: list[str], start_slot: Slot | None = None, samplera
 def delete_sound(slot: Slot, acknowledge: Annotated[str, Param(description='must be exactly "DELETE SOUND <slot>"')], allow_factory: bool = False) -> dict[str, Any]:
     """Delete a sample slot (no undo on the device; the last full backup holds its PCM). Factory slots 1-599 need allow_factory=True."""
     with _device() as (ep, _c):
-        return ep.delete_sound(slot, acknowledge, allow_factory=allow_factory)
+        out = ep.delete_sound(slot, acknowledge, allow_factory=allow_factory)
+    if out.get("deleted"):
+        L.Library().forget_slot(slot)
+    return out
 
 
 # ------------------------------------------------------------------ projects
@@ -419,7 +435,15 @@ def _write(project: int, spec: ProjectSpec, label: str, reload: bool, wait: bool
                     raise RuntimeError(f"sound slots {missing} are empty on the device; a pad assigned to them would play nothing (list_sounds, upload_sound)")
                 frames = ep.frames_for_slots({p.slot for p in spec.pads if p.slot and p.trim_end is None})
             template = PJ.find_settings_template(str(ep.backup_root)) if (spec.bpm is not None or spec.fader_bases) else None
-            tar, doc = PJ.compile_spec(spec, base, frames, template)
+            pitches = None
+            if PJ.concert_slots(spec):
+                lib = L.Library()
+                pitches = {}
+                for rec in lib.records.values():
+                    f = rec.get("features", {})
+                    if rec.get("slot") is not None and f.get("midi_note") is not None and f.get("pitch_confidence", 0) > 0.5:
+                        pitches[rec["slot"]] = float(f["midi_note"])
+            tar, doc = PJ.compile_spec(spec, base, frames, template, pitch_by_slot=pitches)
             _stage(job, f"writing {len(tar) // 1024} KB")
             result = ep.write_project(project, tar, label, reload=reload, base=base)
             result["checkpoint"] = str(ckpt)
@@ -627,6 +651,90 @@ def measure_take(take_id: str, expected_times_s: list[float] | None = None, bpm:
     if ticks is not None:
         expected_times_s = [t * 60.0 / (float(bpm or _cfg().default_bpm) * PJ.PPQN) for t in ticks]
     return player.grade(rec, start, expected_times_s or [])
+
+
+# ------------------------------------------------------------------ the sample library
+
+Category = Literal[tuple(L.CATEGORIES)]
+Bank = Literal["kick", "snare", "hat", "perc", "bass", "melodic", "user"]
+
+
+@mcp.tool(annotations=RO)
+def library_status() -> dict[str, Any]:
+    """The companion sample library: how many sounds are indexed (device slots from the last backup, imports, uploads), how many are loaded on the device, and when it was built."""
+    return L.Library().status()
+
+
+@mcp.tool(annotations=RO)
+def search_sounds(query: str | None = None, labels: list[str] | None = None, exclude: list[str] | None = None,
+                  min_seconds: float | None = None, max_seconds: float | None = None, pitched: bool | None = None,
+                  bank: Bank | None = None, on_device: bool | None = None, pitch_class: str | None = None, limit: int = 25) -> list[dict[str, Any]]:
+    """Find sounds by words in their name or labels, by labels (a category such as kick, snare, hat_closed, hat_open, bass, reese, chord, pad, vocal, fx, plus descriptors such as short, long, punchy, bright, dark, tonal, noisy, stereo, and bank:kick..bank:melodic), by length, pitch, bank, or whether they are loaded on the device. list_labels shows every label with counts."""
+    return L.Library().search(query=query, labels=labels, exclude=exclude, min_seconds=min_seconds, max_seconds=max_seconds, pitched=pitched,
+                              bank=bank, on_device=on_device, pitch_class=pitch_class, limit=limit)
+
+
+@mcp.tool(annotations=RO)
+def list_labels() -> dict[str, Any]:
+    """Every label in the library with its count and three example sounds, plus the fixed category and descriptor vocabularies."""
+    return L.Library().labels()
+
+
+@mcp.tool(annotations=RO)
+def describe_library_sound(sound: str) -> dict[str, Any]:
+    """Everything the library measured about one sound (a slot number or a library id): length, attack, decay, sustain, brightness, pitch and confidence, low/high energy shares, device metadata, labels and tags."""
+    rec = L.Library().get(sound)
+    if rec is None:
+        raise KeyError(f"no library record for {sound!r} (search_sounds finds ids; rebuild_library indexes the last backup)")
+    return rec
+
+
+@mcp.tool(annotations=SETS)
+def tag_sound(sound: str, add: list[str] | None = None, remove: list[str] | None = None) -> dict[str, Any]:
+    """Add or remove free-form tags on a library sound (a slot number or id), e.g. "boop", "amen", "dark"; tags are searchable like labels."""
+    return L.Library.row(L.Library().tag(sound, add, remove))
+
+
+@mcp.tool(annotations=RW)
+def import_sounds(paths: list[str], tags: list[str] | None = None, origin: str | None = None, license_note: str | None = None) -> list[dict[str, Any]]:
+    """Copy WAVs into the library and index them with measured features and guessed labels, without touching the device; load_sound puts one on a slot later. Record where they came from and under what licence."""
+    lib = L.Library()
+    out = []
+    for p in paths:
+        p = os.path.expanduser(p)
+        files = sorted(glob.glob(os.path.join(p, "*.wav")) + glob.glob(os.path.join(p, "*.WAV"))) if os.path.isdir(p) else [p]
+        for f in files:
+            out.append(L.Library.row(lib.import_wav(f, tags=tags, origin=origin, license_note=license_note)))
+    return out
+
+
+@mcp.tool(annotations=RW)
+def load_sound(sound: str, slot: Slot | None = None, samplerate: SampleRate = 46875, mono: bool = True, wait: bool | None = None) -> dict[str, Any]:
+    """Upload a library sound (by id) to a device slot (default the first free from 600), converted and byte-verified; the library then knows which slot holds it."""
+    rec = L.Library().get(sound)
+    if rec is None:
+        raise KeyError(f"no library record {sound!r}")
+    path = (rec.get("source") or {}).get("path")
+    if not path or not os.path.exists(path):
+        raise FileNotFoundError(f"the library has no audio file for {sound!r} ({path})")
+    if path.endswith(".pcm"):
+        raise ValueError(f"{sound!r} is a device slot already (slot {rec.get('slot')}); upload_sound takes WAVs")
+    return upload_sound(path, slot=slot, name=rec.get("name"), samplerate=samplerate, mono=mono, wait=wait)
+
+
+@mcp.tool(annotations=RW)
+def sync_library(wait: bool | None = None) -> dict[str, Any]:
+    """Bring the library in line with the device: index slots it does not know (read from the device, about 7 s each) and forget slots that were deleted on the device."""
+    def work(job: Job | None) -> dict[str, Any]:
+        with _device() as (ep, _c):
+            return L.Library().sync_with_device(ep, stage=lambda t: _stage(job, t))
+    return _run_or_job("sync_library", "library-sync", 20.0, wait, work)
+
+
+@mcp.tool(annotations=RW)
+def rebuild_library(backup: str | None = None) -> dict[str, Any]:
+    """Re-index every device slot from the newest backup (or the named backup folder), keeping imports and tags; a few seconds, no device traffic."""
+    return L.Library().rebuild_from_backup(backup)
 
 
 # ------------------------------------------------------------------ jobs
