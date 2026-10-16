@@ -68,7 +68,7 @@ def _env_db(x: np.ndarray, sr: int, win_ms: float = 1.0) -> np.ndarray:
     return 20 * np.log10(np.sqrt(np.mean(frames * frames, axis=1)) + 1e-12)
 
 
-def _f0(seg: np.ndarray, sr: int, fmin: float = 30.0, fmax: float = 2000.0) -> tuple[float | None, float]:
+def _f0(seg: np.ndarray, sr: int, fmin: float = 30.0, fmax: float = 2500.0) -> tuple[float | None, float]:
     seg = seg.astype(np.float64)
     seg = seg - seg.mean()
     if len(seg) < sr * 0.03 or not np.any(seg):
@@ -79,12 +79,16 @@ def _f0(seg: np.ndarray, sr: int, fmin: float = 30.0, fmax: float = 2000.0) -> t
     lo, hi = int(sr / fmax), min(int(sr / fmin), n - 2)
     if hi <= lo:
         return None, 0.0
-    lag = lo + int(np.argmax(ac[lo:hi]))
+    # skip the slow fall from lag 0 (a low sine has barely changed after a few samples): search only past the first
+    # dip below zero, so the first real peak is the period
+    below = np.nonzero(ac[1:hi] < 0)[0]
+    start = max(lo, int(below[0]) + 1) if len(below) else lo
+    if hi <= start + 1:
+        return None, 0.0
+    lag = start + int(np.argmax(ac[start:hi]))
     conf = float(ac[lag] / (ac[0] + 1e-12))
-    # an octave below often fits almost as well on bass sounds with strong harmonics: prefer it when it does
-    if 2 * lag < hi and ac[2 * lag] / (ac[0] + 1e-12) > 0.85 * conf:
-        lag = 2 * lag
-        conf = float(ac[lag] / (ac[0] + 1e-12))
+    # no octave correction: for a periodic tone the autocorrelation at twice the period is as high as at the period,
+    # so the highest peak (the shortest strong period) is the fundamental; TE's root-note metadata is kept beside it
     a, b, c = ac[lag - 1], ac[lag], ac[lag + 1]
     denom = a - 2 * b + c
     if denom != 0:
@@ -299,8 +303,33 @@ class Library:
                          md.get("name"), slot, {"kind": "device-backup", "path": pcm_path, "backup": os.path.basename(backup_dir)}, md)
             count += 1
         self.meta["backup"] = backup_dir
+        refreshed = self.reanalyze_local(exclude_prefix="slot-", only_without_backup=True)
         self.save()
-        return {"indexed": count, "backup": backup_dir, "records": len(self.records)}
+        return {"indexed": count, "backup": backup_dir, "records": len(self.records), "reanalyzed": refreshed}
+
+    def reanalyze_local(self, exclude_prefix: str | None = None, only_without_backup: bool = False) -> int:
+        """Recompute features and labels for records whose audio is on this Mac (imports, cached device reads, uploads)."""
+        import soundfile as sf
+
+        count = 0
+        for rid, rec in list(self.records.items()):
+            src = rec.get("source") or {}
+            if only_without_backup and src.get("kind") == "device-backup":
+                continue
+            path = src.get("path")
+            if not path or not os.path.exists(path):
+                continue
+            if path.endswith(".pcm"):
+                pcm = open(path, "rb").read()
+                sr, ch = int(rec.get("samplerate", 46875)), int(rec.get("channels", 1))
+            else:
+                x, sr = sf.read(path, dtype="float32", always_2d=True)
+                ch = x.shape[1]
+                pcm = (np.clip(x, -1, 1) * 32767).astype("<i2").tobytes()
+            self.add_pcm(rid, pcm, sr, ch, rec.get("name"), rec.get("slot"), src, (rec.get("device") or None) and {k.replace("sound.", "sound."): v for k, v in rec["device"].items()},
+                         rec.get("user_tags"))
+            count += 1
+        return count
 
     def import_wav(self, path: str, tags: list[str] | None = None, origin: str | None = None, license_note: str | None = None,
                    name: str | None = None) -> dict[str, Any]:
@@ -323,9 +352,16 @@ class Library:
         return rec
 
     def note_upload(self, slot: int, pcm: bytes, samplerate: int, channels: int, name: str, source_path: str | None) -> dict[str, Any]:
-        rec = self.add_pcm(f"slot-{slot:03d}", pcm, samplerate, channels, name, slot, {"kind": "upload", "path": source_path, "time": time.strftime("%Y-%m-%d %H:%M:%S")})
+        rec = self.add_pcm(f"slot-{slot:03d}", pcm, samplerate, channels, name, slot,
+                           {"kind": "upload", "path": self._cache_pcm(slot, pcm), "wav": source_path, "time": time.strftime("%Y-%m-%d %H:%M:%S")})
         self.save()
         return rec
+
+    def _cache_pcm(self, slot: int, pcm: bytes) -> str:
+        path = os.path.join(C.folder("library", "pcm"), f"slot-{slot:03d}.pcm")
+        with open(path, "wb") as f:
+            f.write(pcm)
+        return path
 
     def sync_with_device(self, ep, stage=None) -> dict[str, Any]:
         """Index every device slot missing from the library (read from the device) and forget slots that are gone."""
@@ -339,7 +375,7 @@ class Library:
             pcm, _open = ep.client.read_sound(slot)
             md = ep.client.get_sample_metadata(slot)
             self.add_pcm(f"slot-{slot:03d}", pcm, int(md.get("samplerate", 46875) or 46875), int(md.get("channels", 1) or 1), md.get("name"), slot,
-                         {"kind": "device", "time": time.strftime("%Y-%m-%d %H:%M:%S")}, md)
+                         {"kind": "device", "path": self._cache_pcm(slot, pcm), "time": time.strftime("%Y-%m-%d %H:%M:%S")}, md)
             added.append(slot)
         gone = sorted(indexed - present)
         for slot in gone:

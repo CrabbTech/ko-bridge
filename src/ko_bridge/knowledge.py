@@ -29,7 +29,8 @@ Pads: notes 36-83 trigger the 48 pads of the ACTIVE project: group A 36-47, B 48
 the keypad order is . 0 enter 1 2 3 4 5 6 7 8 9. The device receives on all channels by default and sends on channel 1.
 Latency: note-on to audio 3.5 ms (0.3 ms jitter). Pattern hits under Mac clock: within ~4 ms of the grid, jitter 0.4 ms.
 Pitch: an event's note byte is pitch relative to the pad's root byte (default root 60); root = pad note gives native
-pitch. A 26,250 Hz sample plays correctly (the device resamples per slot).
+pitch, and any sound becomes a melody instrument by varying the note byte (KEYS mode by hand, semitones/concert events
+here). A 26,250 Hz sample plays correctly (the device resamples per slot).
 Fader lanes: level pitch time lowpass highpass fx attack release pan tune velocity modulation (ids 0-11), values latch
 and SLEW: a change is not complete within ~60 ms, so place it ahead of the hit it should shape. The group FX send gates
 the master effect entirely.
@@ -61,8 +62,16 @@ PROJECT_FORMAT = """write_project spec (JSON):
  "fx": {"type": "reverb", "x": 0.4, "y": 0.5, "output_compressor_drive": 0.2}
 }
 step = 16th notes from the pattern start (24 ticks); tick is the alternative (96 per beat, 384 per bar). trim_end is in
-frames at the sample's native rate; null means the whole sample (looked up on the device). note null = the pad's root.
-Silent groups in the scene get an empty pattern member automatically. Unmentioned pads, patterns and members survive."""
+frames at the sample's native rate; null means the whole sample (looked up on the device).
+Melody on any sound (what KEYS mode does by hand): give an event "semitones" (offset from the sample's native pitch),
+"concert" (a note name such as "E3" the sound should actually sound at, resolved through the library's measured pitch of
+that sample; search_sounds shows each sound's pitch), or the raw "note" byte (the pad's root = native). Chords are the
+same idea on a chord sample: "liquid chord em7" at semitones -5 is Bm7. Use play_mode "key" with a release below 255 when
+note lengths should matter.
+Arrangements: "scenes": [ {"patterns": {"A": 1, "B": 1}}, {"patterns": {"A": 2}} ] writes scenes 1..N (groups left out keep
+their current reference, missing patterns become empty members), "song": [1, 2, 1] is the order the device's own song
+mode plays (hold MAIN + ENTER for the song list editor, SHIFT+PLAY plays from the start), "current_scene" is the scene the
+Mac's START plays. Unmentioned pads, patterns and members survive."""
 
 HUMAN_STEPS = {
     "system_settings": "System settings: press SHIFT+ERASE. Navigate with - and + and ENTER, or type a setting's code on the pads (e.g. 1 0 1); the display shows the new value briefly. SHIFT+ENTER goes back a page; MAIN returns to the normal screen.",
@@ -77,6 +86,9 @@ HUMAN_STEPS = {
     "sound_edit": "Sound edit for the selected pad: SHIFT+SOUND. Hold SHIFT+SOUND two seconds to save edits.",
     "sample_mode": "Sampling on the device: press SAMPLE (LEDs blink), hold a pad to record, +/- to choose mic/line/resample/USB input, MAIN to exit. Hold SOUND, type a slot number, ENTER, then SAMPLE to sample into a chosen slot.",
     "play_stop": "Transport: PLAY starts, STOP stops (also MIDI STOP from the Mac chokes voices). RECORD arms recording of pads into the pattern.",
+    "song_mode": "Song mode (plays the song order the bridge wrote): hold MAIN and press ENTER to open the song list editor; - and + move between song positions; SHIFT+PLAY plays the song from the start, PLAY from the current position; STOP stops; MAIN returns to the normal screen. The device's own transport runs it, so MIDI clock must be internal (SHIFT+ERASE, 1 0 0, MAIN) unless the Mac is sending clock.",
+    "commit": "Commit (SHIFT+MAIN) duplicates the current scene into the next one so you can vary it; the bridge writes scenes directly, so commit is only needed when composing by hand.",
+    "keys_mode": "Keys mode: select a pad, press KEYS; the 12 pads play that sound chromatically. Hold KEYS and press - or + for the octave; hold KEYS and press a pad to transpose the scale. Record notes with RECORD + pad (step) or RECORD then PLAY (live). The bridge writes the same thing as events with semitones or concert pitches.",
     "power_cycle": "If the display shows an error or the bridge reports a debug SysEx frame: stop everything, hold the power switch off, wait, power on, then run get_status and describe_project before any write.",
     "never": "Never: SHIFT+ERASE while powering on (formats the drive and erases all sounds). The bridge never writes settings and never formats.",
 }
