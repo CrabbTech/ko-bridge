@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+dist/
+build/
+
+# Secrets and device data never belong in the repo
+secrets.env
+*.env
+*.ppak
+*.wav
+*.tar
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
