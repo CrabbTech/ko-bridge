@@ -163,3 +163,21 @@ playback start/stop) was done from the Mac.
 14. `human_steps` — exact key presses for the settings the protocol cannot reach (clock 100-102, channel 110-127, USB audio 510/511, sample rate 500-502).
 15. `restore_checkpoint` — write a saved TAR back to its slot (undo for 6).
 16. `job_status` — progress and result of long operations (backup, crate upload).
+
+## Addendum: server build (same day)
+
+The MCP server (27 tools, `src/ko_bridge/server.py`) and 11 functional tests were written after the spike. Two findings
+from running the tests against the device:
+
+- **Playback right after FILE traffic misbehaves.** Twice, when a note or MIDI START followed a FILE session (a project
+  GET, or a project switch) within about 3 s, the USB audio output froze on one repeating 49-sample packet (a constant
+  -8 dBFS buzz at 48,000/49 ≈ 980 Hz with a DC offset) and, in the START case, the sequencer fired three note-ons at
+  t = 0 and nothing more; the following metadata session then timed out. A passive listen showed no debug frames, the
+  idle stream returned to digital silence, and a power cycle (Tyler) cleared the state. The epsysex docs already advise a
+  ~6 s settle between write/reload and transport; ko-bridge now waits 6 s after **any** FILE session before playing or
+  recording, describes the project before that wait, warns when a take's level is constant for 1.5 s, and warns when the
+  device's notes all arrive within 50 ms of START. With that rule all tests pass.
+- **Latency re-measured by the server's live-note path:** hits arrive 1.8-3.3 ms after the note (high-passed onset above
+  -30 dBFS), consistent with the spike's 3.0-4.2 ms burst-crossing figure.
+
+Human steps added: one power cycle (hold the power switch off, wait, power on) after the timed-out session.
