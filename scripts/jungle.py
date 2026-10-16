@@ -23,16 +23,16 @@ S = 16  # steps per bar
 PADS = [
     # group A: drums (one-shots play through)
     PadSpec(group="A", pad="1", slot=16, amplitude=112),               # kick hard
-    PadSpec(group="A", pad="2", slot=111, amplitude=104),              # snare smack
-    PadSpec(group="A", pad="3", slot=134, amplitude=92),               # rim mid (ghost notes)
-    PadSpec(group="A", pad="4", slot=204, amplitude=86),               # closed hat mid
-    PadSpec(group="A", pad="5", slot=222, amplitude=88),               # open hat drive
-    PadSpec(group="A", pad="6", slot=336, amplitude=78),               # shaker dmx
+    PadSpec(group="A", pad="2", slot=111, amplitude=110),              # snare smack
+    PadSpec(group="A", pad="3", slot=134, amplitude=104),              # rim mid (ghost notes)
+    PadSpec(group="A", pad="4", slot=204, amplitude=118),              # closed hat mid
+    PadSpec(group="A", pad="5", slot=222, amplitude=112),              # open hat drive
+    PadSpec(group="A", pad="6", slot=336, amplitude=100),              # shaker dmx
     PadSpec(group="A", pad="7", slot=248, amplitude=80),               # crash
     PadSpec(group="A", pad="8", slot=303, amplitude=86),               # clap real
     # group B: bass, key mode so the note length and release shape each note
-    PadSpec(group="B", pad="1", slot=429, play_mode="key", release=90, amplitude=104),   # reese (G)
-    PadSpec(group="B", pad="2", slot=426, play_mode="key", release=120, amplitude=100),  # thirty seven sub (B)
+    PadSpec(group="B", pad="1", slot=429, play_mode="key", release=90, amplitude=96),    # reese (G)
+    PadSpec(group="B", pad="2", slot=426, play_mode="key", release=120, amplitude=82),   # thirty seven sub (B)
     # group C: harmony
     PadSpec(group="C", pad="1", slot=542, amplitude=92),               # liquid chord em7 (E), plays through
     PadSpec(group="C", pad="2", slot=522, amplitude=72),               # soothe string (C), plays through
@@ -52,7 +52,7 @@ def ev(group: str, bar: int, step: float, pad: str, vel: int = 100, semis: int =
 
 def drums() -> PatternSpec:
     e = []
-    hat_vel = [95, 55, 80, 55] * 4
+    hat_vel = [110, 72, 92, 72] * 4
     opens = {6, 14}
     for bar in range(4):
         bar_opens = opens if bar != 3 else {6}
