@@ -142,7 +142,7 @@ Only one setting had to be changed at the device; everything else (project switc
 playback start/stop) was done from the Mac.
 
 1. Before the pattern test, Tyler set MIDI clock to receive: **SHIFT+ERASE**, then typed **1 0 1** on the pads; the display showed **IN** briefly and returned to the system-settings entry screen (no ENTER was needed). **MAIN** returned the device to its normal screen. The previous value was not recorded; TE's default is 100 (off).
-2. To restore afterwards: SHIFT+ERASE, type the previous code (1 0 0 for off), MAIN.
+2. Tyler chose to leave MIDI clock on receive (101) after the spike; to restore: SHIFT+ERASE, type the previous code (1 0 0 for off), MAIN.
 3. The device must be on its normal screen (MAIN) for MIDI notes and clock to play pads; it was.
 
 ## Recommended device-layer API (MCP tools)
