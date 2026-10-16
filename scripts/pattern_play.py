@@ -110,10 +110,7 @@ def main() -> int:
     tick_s = 60.0 / (args.bpm * PPQN)
     bar_ticks = 4 * PPQN
     expected = []
-    for bar in range(args.bars_to_clock):
-        for t, p, n, v in EVENTS:
-            tick = t + bar * 4 * bar_ticks if False else t + (bar // 1) * 0  # placeholder, replaced below
-    # the 4-bar pattern loops: occurrences inside the clocked window
+    # the 4-bar pattern loops: list every occurrence inside the clocked window
     pattern_ticks = 4 * bar_ticks
     total_ticks = args.bars_to_clock * bar_ticks
     for rep in range((total_ticks + pattern_ticks - 1) // pattern_ticks):
