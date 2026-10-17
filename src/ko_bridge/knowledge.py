@@ -16,14 +16,17 @@ QUICKSTART = """ko-bridge quickstart: a beat on the EP-133 in five moves.
 5. play_pattern(bpm, bars): MIDI START + clock from the Mac, recording the USB audio and the device's own note output;
    the result grades onsets against the grid (expected within ~4 ms, jitter well under 1 ms). play_notes plays pads
    live (3.5 ms latency). render_song(project) records a whole song position by position and stitches it, with nobody at
-    the device. Listen with get_take / the WAV path, and run critique_take(take_id) for 4-band spectral balance + Gemini
-    3.1 Pro multimodal audio critique. Never ask the human to arm or time a recording: the bridge drives playback; the
+    the device. Listen with get_take / the WAV path, and run critique_take(take_id) for 4-band spectral balance plus a
+    Gemini 3.1 Pro critique of the audio when GEMINI_API_KEY is configured (get_status shows it; without the key the
+    result says no model was used). Never ask the human to arm or time a recording: the bridge drives playback; the
     one setting it needs is MIDI clock on receive (101), set once.
 
 Musical & Chopping Rules (DO NOT synthesize raw math sine/saw WAVs or treat the K.O. II as a static ROMpler):
-- Use chop_sample(wav_path, group="C", shared_slot=True) or generate_lyria_chop_group(prompt, bpm, bars) to slice a real
-  breakbeat or musical stem across 12 pads (pads 1..8 = structural beat-grid chops, 9/0/. = transient accents, enter =
-  reversed REV pickup chop) referencing ONE shared sample slot via trim_start/trim_end and choke=True.
+- Use chop_sample(wav_path, group="C", shared_slot=True) to slice a real breakbeat, a library sound or a recording across
+  12 pads (pads 1..8 = structural beat-grid chops, 9/0/. = transient accents, enter = reversed REV pickup chop)
+  referencing ONE shared sample slot via trim_start/trim_end (a LENGTH) and choke=True. generate_lyria_chop_group does
+  the same with an instrumental loop from Lyria 3.5 (paid, needs GEMINI_API_KEY); when Lyria is unavailable it reports
+  the error and nothing is synthesized in its place.
 - External MIDI clock runs at 24 PPQN (1 MIDI clock pulse = 4 internal 96-PPQN ticks). Always snap sub-step offsets to
   multiples of 4 ticks (ko_bridge.groove.snap_tick_to_clock) so the clock follower never interpolates mid-pulse.
 - Group faders slew over ~100 ms: pre-lead step jumps by 0.5 steps (12 ticks) using groove.compensate_fader_slew and

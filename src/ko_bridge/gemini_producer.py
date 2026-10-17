@@ -1,18 +1,26 @@
-"""Google Gemini 3.1 Pro & Lyria 3 integration for ko-bridge:
-- `generate_lyria_stem`: Generates musical sample loops via `lyria-3-clip-preview` for Group C/D auto-chopping.
-- `compile_beat_with_gemini`: Compiles natural-language beat prompts into multi-scene `ProjectSpec` arrangements
-  using `gemini-3.1-pro-preview` with structured JSON schemas, MPC swing, DJ Screw double-up stutters, and
-  slew-compensated fader automation.
-- `critique_take_with_gemini`: Multimodal closed-loop audio critic that sends the recorded EP-133 USB WAV +
-  4-band spectral DSP report to `gemini-3.1-pro-preview` and returns actionable mix/groove refinements.
+"""Google Gemini 3.1 Pro and Lyria 3.5 for ko-bridge: the cloud "producer" layer.
+
+- `generate_lyria_stem`: an instrumental loop from Lyria 3.5 (`lyria-3.5`, WAV through `response_format`) saved as a
+  WAV for chopping. Nothing stands in for it: without a key, without the `gemini` extra, or on a failed request it
+  raises, because the library rule is real samples only (no synthesized audio, ever).
+- `compile_beat_with_gemini`: a natural-language beat prompt compiled into a `GeminiBeatPlan` by `gemini-3.1-pro-preview`
+  (structured JSON), then into a `ProjectSpec` by `plan_to_project_spec` with MPC swing, a lazy snare pocket, DJ Screw
+  double-ups and slew-compensated fader lanes. Without a key the deterministic `compile_heuristic_beat_plan` runs and the
+  result says so (`model` = "heuristic-chop-screw-compiler": no model involved).
+- `critique_take_with_gemini`: the recorded take WAV plus a 4-band DSP report sent to `gemini-3.1-pro-preview` for a
+  structured critique; without a key a DSP-only reading comes back, labelled (`model` = "dsp-spectral-critic").
+
+GEMINI_API_KEY comes from the environment: `config.load_secrets` fills it from ~/Music/ko-bridge/secrets.env (or the
+op-bridge one) at server start, and `_api_key` calls it again so scripts and tests find the key too. A failed cloud
+request is never swallowed: it surfaces as an exception that the MCP tool reports.
 """
 from __future__ import annotations
 
 import base64
 import io
 import json
-import math
 import os
+import urllib.request
 from typing import Any, Literal
 
 import numpy as np
@@ -20,7 +28,6 @@ import soundfile as sf
 from pydantic import BaseModel, Field
 
 from . import analysis as an
-from . import chopper as CH
 from . import config as C
 from . import groove as GR
 from .project import (
@@ -38,20 +45,31 @@ from .project import (
 )
 
 GEMINI_PRO_MODEL = "gemini-3.1-pro-preview"
-LYRIA_CLIP_MODEL = "lyria-3-clip-preview"
+# Lyria 3.5 has been the stable music model since 2026-09-03 and is the only one that returns WAV (response_format);
+# lyria-3-clip-preview and lyria-3-pro-preview are legacy 30 s MP3 clips. All of them sing unless the prompt says not to.
+LYRIA_MODEL = "lyria-3.5"
+HEURISTIC_COMPILER = "heuristic-chop-screw-compiler"
+DSP_CRITIC = "dsp-spectral-critic"
+NO_KEY_NOTE = "no model used: GEMINI_API_KEY is not set (config.load_secrets reads ~/Music/ko-bridge/secrets.env), so this is the deterministic path"
+NO_MODEL_REQUESTED_NOTE = "no model used: the deterministic path was requested (use_gemini=False)"
+
+
+def no_model_note(use_gemini: bool = True) -> str:
+    """Why a result carries a no-model `model` value: the caller asked for it, or there is no key."""
+    return NO_KEY_NOTE if use_gemini else NO_MODEL_REQUESTED_NOTE
 
 
 # --------------------------------------------------------------------------- Structured Schemas for Gemini 3.1 Pro
 
 class DrumHitSpec(BaseModel):
     pad: PadLabel = Field(description='Group A drum pad: "." (kick), "0" (snare), "1" (closed hat), "2" (open hat), "3" (clap/rim)')
-    step: float = Field(ge=0, lt=64, description="16th-note step index (0..63 for 4 bars)")
+    step: float = Field(ge=0, le=63.75, description="16th-note step (0..63.75 for 4 bars; fractions place 1/32 and 1/64 hits)")
     velocity: int = Field(default=100, ge=1, le=127)
 
 
 class BassHitSpec(BaseModel):
     pad: PadLabel = Field(default=".", description='Group B bass pad ("." = sub/808, "0" = reese/mid-bass)')
-    step: float = Field(ge=0, lt=64)
+    step: float = Field(ge=0, le=63.75)
     semitones: int = Field(default=0, ge=-12, le=12, description="Semitone offset from root")
     duration_steps: float = Field(default=3.5, ge=0.5, le=16.0)
     velocity: int = Field(default=108, ge=1, le=127)
@@ -59,7 +77,7 @@ class BassHitSpec(BaseModel):
 
 class ChopTriggerSpec(BaseModel):
     pad: PadLabel = Field(description='Group C chop pad: "1".."9" (main slices), "0" / "." (transient accents), "enter" (reversed pickup)')
-    step: float = Field(ge=0, lt=64)
+    step: float = Field(ge=0, le=63.75)
     velocity: int = Field(default=110, ge=1, le=127)
     semitones: int = Field(default=0, ge=-12, le=12)
     stutter: Literal["none", "double_up", "triplet_roll", "chop_echo"] = "none"
@@ -67,7 +85,7 @@ class ChopTriggerSpec(BaseModel):
 
 
 class TapeStopDiveSpec(BaseModel):
-    step: float = Field(ge=0, lt=64, description="Step where the tape-stop pitch dive or Punch-In FX burst begins")
+    step: float = Field(ge=0, le=63.75, description="Step where the tape-stop pitch dive or Punch-In FX burst begins")
     duration_steps: float = Field(default=2.0, ge=0.5, le=8.0)
     kind: Literal["tape_stop", "punch_in_x", "punch_in_y"] = "tape_stop"
     intensity: float = Field(default=0.85, ge=0.1, le=1.0)
@@ -115,160 +133,144 @@ class GeminiAudioCritique(BaseModel):
 
 # --------------------------------------------------------------------------- Client Helper
 
+class GeminiUnavailable(RuntimeError):
+    """No Gemini API key or no google-genai package: the cloud path cannot run, and nothing stands in for it."""
+
+
+class LyriaError(RuntimeError):
+    """Lyria took the request but gave no usable audio (a failed interaction, a filtered prompt, an unreadable payload)."""
+
+
+def _api_key(api_key: str | None = None) -> str | None:
+    if api_key:
+        return api_key
+    C.load_secrets()   # GEMINI_API_KEY from ~/Music/ko-bridge/secrets.env or op-bridge's, never overriding the environment
+    return os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+
+
 def _get_client(api_key: str | None = None):
-    key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    """A google-genai client, or GeminiUnavailable saying exactly what is missing (never None)."""
+    key = _api_key(api_key)
     if not key:
-        return None
-    from google import genai
+        raise GeminiUnavailable("no GEMINI_API_KEY: put GEMINI_API_KEY=... in ~/Music/ko-bridge/secrets.env (never in the repo) or export it")
+    try:
+        from google import genai
+    except ImportError as e:
+        raise GeminiUnavailable("the google-genai package is not installed: uv sync --extra gemini") from e
     return genai.Client(api_key=key)
 
 
-# --------------------------------------------------------------------------- 1. Lyria 3 Stem Generator
+def _optional_client(api_key: str | None = None):
+    """The client when a key is configured, else None so the caller takes its labelled no-model path."""
+    if not _api_key(api_key):
+        return None
+    return _get_client(api_key)
 
-def _render_organic_soul_stem(bpm: float = 68.0, bars: int = 4, sr: int = 46875, seed: int = 42) -> np.ndarray:
-    """Fallback warm vintage Rhodes + dusty bass + vinyl texture loop when offline or without GEMINI_API_KEY.
 
-    Uses electric-piano tine overtones, tape wow/flutter LFO, chorus stereo spread, and transient horn/vocal
-    accents so auto-chopping produces genuinely musical slices with clear transient boundaries.
-    """
-    rng = np.random.default_rng(seed)
-    bar_s = 240.0 / float(bpm)
-    total_s = bars * bar_s
-    n = int(round(total_s * sr))
-    t = np.arange(n, dtype=np.float64) / sr
-
-    # Warm minor-9th chord progression across 4 bars (Cm9 -> Fm9 -> Abmaj7 -> G7alt)
-    chords_midi = [
-        (48, 60, 63, 67, 70, 74),  # Cm9
-        (53, 60, 65, 68, 72, 75),  # Fm9
-        (56, 63, 68, 72, 75, 79),  # Abmaj9
-        (55, 62, 65, 71, 74, 78),  # G7#5#9
-    ]
-
-    left = np.zeros(n, dtype=np.float64)
-    right = np.zeros(n, dtype=np.float64)
-
-    # Subtle tape wow & flutter (0.55 Hz + 4.2 Hz)
-    flutter = 1.0 + 0.0012 * np.sin(2 * math.pi * 0.55 * t) + 0.0004 * np.sin(2 * math.pi * 4.2 * t)
-
-    # Render 8 structural chord/stab events per 4-bar loop (every half-bar + syncopated accents)
-    half_bar_s = bar_s / 2.0
-    for bar_idx in range(bars):
-        chord = chords_midi[bar_idx % len(chords_midi)]
-        for sub_idx, beat_offset_s in enumerate((0.0, half_bar_s * 0.75, half_bar_s, half_bar_s * 1.625)):
-            onset_s = bar_idx * bar_s + beat_offset_s
-            start_i = int(round(onset_s * sr))
-            if start_i >= n:
-                continue
-            dur_s = half_bar_s * (0.85 if sub_idx in (0, 2) else 0.45)
-            end_i = min(n, start_i + int(round(dur_s * sr)))
-            seg_t = np.arange(end_i - start_i, dtype=np.float64) / sr
-            seg_flutter = flutter[start_i:end_i]
-
-            # Rhodes electric piano voice: fundamental + warm 2nd/3rd harmonic + bell tine transient
-            env_body = (1.0 - np.exp(-seg_t / 0.004)) * np.exp(-seg_t / 1.15)
-            env_tine = (1.0 - np.exp(-seg_t / 0.0015)) * np.exp(-seg_t / 0.065)
-            voice_l = np.zeros_like(seg_t)
-            voice_r = np.zeros_like(seg_t)
-            vel_scale = 1.0 if sub_idx in (0, 2) else 0.72
-            for k, m_note in enumerate(chord):
-                freq = 440.0 * (2.0 ** ((m_note - 69.0) / 12.0))
-                phase = 2.0 * math.pi * freq * seg_t * seg_flutter
-                tone = (
-                    0.65 * np.sin(phase + 0.25 * np.sin(2.0 * phase)) * env_body
-                    + 0.22 * np.sin(2.0 * phase) * env_body * np.exp(-seg_t / 0.45)
-                    + 0.14 * np.sin(6.0 * phase) * env_tine
-                )
-                pan_l = 0.65 - 0.06 * (k % 3)
-                pan_r = 0.35 + 0.06 * (k % 3)
-                voice_l += tone * pan_l * vel_scale
-                voice_r += tone * pan_r * vel_scale
-
-            left[start_i:end_i] += voice_l / len(chord)
-            right[start_i:end_i] += voice_r / len(chord)
-
-    # Add gentle tremolo + warm saturation + subtle vinyl dust
-    trem_l = 0.85 + 0.15 * np.sin(2 * math.pi * (bpm / 60.0) * t)
-    trem_r = 0.85 + 0.15 * np.cos(2 * math.pi * (bpm / 60.0) * t)
-    left = np.tanh(left * trem_l * 1.8) * 0.75
-    right = np.tanh(right * trem_r * 1.8) * 0.75
-
-    dust = rng.normal(0.0, 0.0025, size=(n, 2))
-    stereo = np.column_stack([left, right]) + dust
-    peak = float(np.max(np.abs(stereo))) + 1e-9
-    stereo = (stereo / peak * 0.89).astype(np.float32)
-    return stereo
-
+# --------------------------------------------------------------------------- 1. Lyria 3.5 Stem Generator
 
 def generate_lyria_stem(
     prompt: str,
     bpm: float = 68.0,
     bars: int = 4,
     out_wav_path: str | None = None,
-    samplerate: int = 46875,
     api_key: str | None = None,
+    instrumental: bool = True,
+    trim_to_bars: bool = True,
+    timeout_s: float = 300.0,
 ) -> dict[str, Any]:
-    """Generate a musical sample loop using Google's Lyria 3 (`lyria-3-clip-preview`) and save it as a WAV.
+    """Generate a loop with Lyria 3.5 and save it as a 16-bit WAV. A paid call (about $0.08 a clip).
 
-    Falls back to the organic vintage Rhodes/Soul stem generator if `GEMINI_API_KEY` is unavailable or if the
-    preview endpoint is unreachable, so downstream chopping and EP-133 project builds always succeed.
+    Lyria sings by default and the prompt text is the only control, so the request says "Instrumental only, no vocals"
+    unless `instrumental` is off; it also asks for `bars` bars at `bpm` and a short piece, and for WAV output
+    (`response_format={"type": "audio"}`, lyria-3.5 only; the legacy clip models return MP3, which is decoded too). The
+    whole generation is kept at `<stem>-full.wav`; `wav_path` holds the first `bars` bars from the first onset when
+    `trim_to_bars` is set, which is what the chopper wants. Raises GeminiUnavailable (no key or no package) or
+    LyriaError (failed or empty interaction, undecodable audio): there is no synthesized stand-in.
     """
-    if out_wav_path is None:
-        stem_id = C.new_id("lyria-stem")
-        out_wav_path = C.file_path("library", "wav", f"{stem_id}.wav")
-    os.makedirs(os.path.dirname(os.path.expanduser(out_wav_path)), exist_ok=True)
-    out_wav_path = os.path.expanduser(out_wav_path)
-
     client = _get_client(api_key)
-    full_prompt = (
-        f"{prompt}. Tempo: {bpm:g} BPM, {bars} bars in 4/4, isolated instrumental/vocal sample loop "
-        "with crisp transients suitable for hip-hop/jungle sampler chopping, no heavy master limiting."
-    )
-    source_kind = "fallback-vintage-soul"
-    audio_bytes: bytes | None = None
+    bar_s = 240.0 / float(bpm)
+    loop_s = int(bars) * bar_s
+    parts = [prompt.strip().rstrip(".")]
+    if instrumental:
+        parts.append("Instrumental only, no vocals")
+    parts.append(f"Tempo {bpm:g} BPM in 4/4, a {int(bars)}-bar loop of about {loop_s:.0f} seconds that starts on the downbeat; "
+                 "keep the whole piece short, around 20 seconds. Crisp transients for sampler chopping, no heavy limiting")
+    full_prompt = ". ".join(parts) + "."
+    if out_wav_path is None:
+        out_wav_path = C.file_path("library", "wav", f"{C.new_id('lyria-stem')}.wav")
+    out_wav_path = os.path.expanduser(out_wav_path)
+    os.makedirs(os.path.dirname(out_wav_path) or ".", exist_ok=True)
 
-    if client is not None:
-        try:
-            # Try Lyria 3 Clip via Interactions API first
-            if hasattr(client, "interactions"):
-                interaction = client.interactions.create(
-                    model=LYRIA_CLIP_MODEL,
-                    input=full_prompt,
-                    response_modalities=["audio"],
-                )
-                for output in getattr(interaction, "outputs", []) or []:
-                    if getattr(output, "type", None) == "audio" and getattr(output, "data", None):
-                        raw = output.data
-                        audio_bytes = base64.b64decode(raw) if isinstance(raw, str) else bytes(raw)
-                        source_kind = LYRIA_CLIP_MODEL
-                        break
-        except Exception:
-            audio_bytes = None
-
-    if audio_bytes:
-        data, sr = sf.read(io.BytesIO(audio_bytes), dtype="float32", always_2d=True)
-        sf.write(out_wav_path, data, int(sr), subtype="PCM_16")
-        return {
-            "wav_path": out_wav_path,
-            "source": source_kind,
-            "prompt": full_prompt,
-            "samplerate": int(sr),
-            "channels": int(data.shape[1]),
-            "seconds": round(len(data) / float(sr), 3),
-        }
-
-    # Organic musical stem fallback
-    stereo = _render_organic_soul_stem(bpm=bpm, bars=bars, sr=samplerate)
-    sf.write(out_wav_path, stereo, int(samplerate), subtype="PCM_16")
+    body = {"model": LYRIA_MODEL, "input": full_prompt, "response_format": {"type": "audio"}}
+    try:
+        interaction = client.interactions.create(timeout=timeout_s, **body)
+    except Exception as e:   # the SDK's own errors (APIError, httpx timeouts): report them, never substitute audio
+        raise LyriaError(f"Lyria request failed: {type(e).__name__}: {e}") from e
+    status = getattr(interaction, "status", None)
+    if status not in (None, "completed"):
+        raise LyriaError(f"Lyria interaction {getattr(interaction, 'id', '?')} ended with status {status!r}: {getattr(interaction, 'errors', None)}")
+    audio = _audio_block(interaction)
+    if audio is None:
+        text = str(getattr(interaction, "output_text", "") or "")[:200]
+        raise LyriaError(f"Lyria returned no audio block (status {status!r}; text {text!r})")
+    raw = _audio_bytes(audio)
+    try:
+        data, sr = sf.read(io.BytesIO(raw), dtype="float32", always_2d=True)
+    except Exception as e:
+        raise LyriaError(f"Lyria audio ({getattr(audio, 'mime_type', '?')}, {len(raw)} B) could not be decoded: {e}") from e
+    sr = int(sr)
+    full_path = (out_wav_path[:-4] if out_wav_path.endswith(".wav") else out_wav_path) + "-full.wav"
+    sf.write(full_path, data, sr, subtype="PCM_16")
+    loop, first_onset_s = (_first_bars(data, sr, loop_s) if trim_to_bars else (data, 0.0))
+    sf.write(out_wav_path, loop, sr, subtype="PCM_16")
     return {
         "wav_path": out_wav_path,
-        "source": source_kind,
+        "full_wav_path": full_path,
+        "source": LYRIA_MODEL,
+        "model": LYRIA_MODEL,
+        "interaction_id": getattr(interaction, "id", None),
         "prompt": full_prompt,
-        "samplerate": int(samplerate),
-        "channels": 2,
-        "seconds": round(len(stereo) / float(samplerate), 3),
-        "note": "rendered with built-in vintage Rhodes/Soul stem engine (set GEMINI_API_KEY with Lyria access for cloud audio generation)",
+        "mime_type": getattr(audio, "mime_type", None),
+        "samplerate": sr,
+        "channels": int(data.shape[1]),
+        "generated_seconds": round(len(data) / sr, 3),
+        "seconds": round(len(loop) / sr, 3),
+        "trimmed_from_s": round(first_onset_s, 3) if trim_to_bars else None,
+        "text": str(getattr(interaction, "output_text", "") or "")[:500] or None,
     }
+
+
+def _audio_block(interaction):
+    """The audio content block of an Interaction: `output_audio` when the SDK filled it, else the last audio item of a
+    model_output step (interleaved output)."""
+    audio = getattr(interaction, "output_audio", None)
+    if audio is not None:
+        return audio
+    for step in getattr(interaction, "steps", None) or []:
+        if getattr(step, "type", None) == "model_output":
+            for item in getattr(step, "content", None) or []:
+                if getattr(item, "type", None) == "audio":
+                    audio = item
+    return audio
+
+
+def _audio_bytes(audio) -> bytes:
+    data = getattr(audio, "data", None)
+    if data:
+        return base64.b64decode(data) if isinstance(data, str) else bytes(data)
+    uri = getattr(audio, "uri", None)
+    if uri:
+        with urllib.request.urlopen(uri, timeout=120) as r:   # delivery="uri": the payload sits on a Google-hosted file
+            return r.read()
+    raise LyriaError("the audio block has neither inline data nor a uri")
+
+
+def _first_bars(data: np.ndarray, sr: int, loop_s: float) -> tuple[np.ndarray, float]:
+    """The first `loop_s` seconds from the first onset (leading silence skipped), or everything when the clip is shorter."""
+    start = an.onset_sample(an.mono(data), sr, start=0, rise_db=12.0, floor_min_db=-60.0) or 0
+    end = min(len(data), start + int(round(loop_s * sr)))
+    return data[start:end], start / sr
 
 
 # --------------------------------------------------------------------------- 2. Gemini 3.1 Pro Beat Compiler
@@ -499,41 +501,42 @@ def compile_beat_with_gemini(
     bpm: float = 68.0,
     bars: int = 4,
     api_key: str | None = None,
+    use_gemini: bool = True,
 ) -> tuple[GeminiBeatPlan, str]:
-    """Use `gemini-3.1-pro-preview` with structured JSON schema to compile a beat prompt into a `GeminiBeatPlan`.
+    """Compile a beat prompt into a `GeminiBeatPlan`; returns `(plan, model)`.
 
-    Returns `(plan, model_used)`. Falls back to `compile_heuristic_beat_plan` if no API key is configured.
+    With a key and `use_gemini`, `gemini-3.1-pro-preview` returns the plan as structured JSON and a failed request
+    raises (nothing is substituted). Without a key, or with `use_gemini=False`, the deterministic
+    `compile_heuristic_beat_plan` runs and the model is HEURISTIC_COMPILER: no model was used, and the tool says so.
     """
-    client = _get_client(api_key)
-    if client is not None:
-        from google.genai import types
-        sys_instruction = (
-            "You are an expert hip-hop, Houston Chop & Screw, Boom-Bap, and Jungle producer programming a "
-            "Teenage Engineering EP-133 K.O. II sampler.\n"
-            "Hardware layout rules:\n"
-            "- Group A (Drums): pad '.' = kick, '0' = snare, '1' = closed hat, '2' = open hat, '3' = clap/rim.\n"
-            "- Group B (Bass): pad '.' = 808/sub bass, '0' = reese/mid-bass, pitched via semitones (-12..+12).\n"
-            "- Group C (Sample Chops): pads '1'..'8' = 8 structural beat chops in chronological order; "
-            "pads '9', '0', '.' = punchy transient accent chops; pad 'enter' = reversed (REV) pickup turnaround chop.\n"
-            "- For Chop & Screw or Boom-Bap, use swing around 0.56..0.60, snare_delay_ticks=4, double_up stutters on "
-            "bars 2 and 4, and trigger pad 'enter' on beat 4.4 (step 12 or 28 or 60) as a reversed pull into the downbeat."
-        )
-        try:
-            resp = client.models.generate_content(
-                model=GEMINI_PRO_MODEL,
-                contents=f"Compose a {bars}-bar beat at {bpm:g} BPM for this vibe: {prompt}",
-                config=types.GenerateContentConfig(
-                    system_instruction=sys_instruction,
-                    response_mime_type="application/json",
-                    response_schema=GeminiBeatPlan,
-                    temperature=0.4,
-                ),
-            )
-            if resp.text:
-                return GeminiBeatPlan.model_validate_json(resp.text), GEMINI_PRO_MODEL
-        except Exception:
-            pass
-    return compile_heuristic_beat_plan(prompt, bpm=bpm, bars=bars), "heuristic-chop-screw-compiler"
+    client = _optional_client(api_key) if use_gemini else None
+    if client is None:
+        return compile_heuristic_beat_plan(prompt, bpm=bpm, bars=bars), HEURISTIC_COMPILER
+    from google.genai import types
+    sys_instruction = (
+        "You are an expert hip-hop, Houston Chop & Screw, Boom-Bap, and Jungle producer programming a "
+        "Teenage Engineering EP-133 K.O. II sampler.\n"
+        "Hardware layout rules:\n"
+        "- Group A (Drums): pad '.' = kick, '0' = snare, '1' = closed hat, '2' = open hat, '3' = clap/rim.\n"
+        "- Group B (Bass): pad '.' = 808/sub bass, '0' = reese/mid-bass, pitched via semitones (-12..+12).\n"
+        "- Group C (Sample Chops): pads '1'..'8' = 8 structural beat chops in chronological order; "
+        "pads '9', '0', '.' = punchy transient accent chops; pad 'enter' = reversed (REV) pickup turnaround chop.\n"
+        "- For Chop & Screw or Boom-Bap, use swing around 0.56..0.60, snare_delay_ticks=4, double_up stutters on "
+        "bars 2 and 4, and trigger pad 'enter' on beat 4.4 (step 12 or 28 or 60) as a reversed pull into the downbeat."
+    )
+    resp = client.models.generate_content(
+        model=GEMINI_PRO_MODEL,
+        contents=f"Compose a {bars}-bar beat at {bpm:g} BPM for this vibe: {prompt}",
+        config=types.GenerateContentConfig(
+            system_instruction=sys_instruction,
+            response_mime_type="application/json",
+            response_schema=GeminiBeatPlan,
+            temperature=0.4,
+        ),
+    )
+    if not resp.text:
+        raise RuntimeError(f"{GEMINI_PRO_MODEL} returned no text for the beat plan; nothing was substituted")
+    return GeminiBeatPlan.model_validate_json(resp.text), GEMINI_PRO_MODEL
 
 
 # --------------------------------------------------------------------------- 3. Multimodal Audio Critic
@@ -543,8 +546,11 @@ def critique_take_with_gemini(
     grade_report: dict[str, Any] | None = None,
     target_vibe: str = "Houston Chop & Screw beat with warm sub-bass, crisp snare pocket, and smooth sample chops",
     api_key: str | None = None,
+    use_gemini: bool = True,
 ) -> dict[str, Any]:
-    """Analyze a recorded EP-133 take WAV using 4-band DSP metrics + `gemini-3.1-pro-preview` multimodal audio input."""
+    """Critique a recorded EP-133 take: a 4-band DSP report, plus `gemini-3.1-pro-preview` listening to the WAV when a
+    key is configured and `use_gemini` is set (the recording leaves the machine; a failed request raises). Without a key
+    the DSP-only reading comes back with model DSP_CRITIC and a note that no model was used."""
     path = os.path.expanduser(wav_path)
     if not os.path.isfile(path):
         raise FileNotFoundError(f"no such take WAV: {path}")
@@ -556,37 +562,35 @@ def critique_take_with_gemini(
         "onset_grade": {k: v for k, v in (grade_report or {}).items() if k != "events"},
     }
 
-    client = _get_client(api_key)
+    client = _optional_client(api_key) if use_gemini else None
     if client is not None:
-        try:
-            from google.genai import types
-            wav_bytes = open(path, "rb").read()
-            prompt_text = (
-                f"Listen to this recorded hardware take from a Teenage Engineering EP-133 K.O. II sampler.\n"
-                f"Target vibe: {target_vibe}\n"
-                f"Measured DSP metrics: {json.dumps(dsp_summary)}\n"
-                "Critique the pocket/groove, chop transitions, and 4-band spectral balance (sub, low-mid mud, presence, air), "
-                "and return concrete parameter adjustments for the next pass."
-            )
-            resp = client.models.generate_content(
-                model=GEMINI_PRO_MODEL,
-                contents=[
-                    types.Part.from_bytes(data=wav_bytes, mime_type="audio/wav"),
-                    prompt_text,
-                ],
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    response_schema=GeminiAudioCritique,
-                    temperature=0.3,
-                ),
-            )
-            if resp.text:
-                critique = GeminiAudioCritique.model_validate_json(resp.text)
-                return {"model": GEMINI_PRO_MODEL, "dsp": dsp_summary, "critique": critique.model_dump()}
-        except Exception:
-            pass
+        from google.genai import types
+        wav_bytes = open(path, "rb").read()
+        prompt_text = (
+            f"Listen to this recorded hardware take from a Teenage Engineering EP-133 K.O. II sampler.\n"
+            f"Target vibe: {target_vibe}\n"
+            f"Measured DSP metrics: {json.dumps(dsp_summary)}\n"
+            "Critique the pocket/groove, chop transitions, and 4-band spectral balance (sub, low-mid mud, presence, air), "
+            "and return concrete parameter adjustments for the next pass."
+        )
+        resp = client.models.generate_content(
+            model=GEMINI_PRO_MODEL,
+            contents=[
+                types.Part.from_bytes(data=wav_bytes, mime_type="audio/wav"),
+                prompt_text,
+            ],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=GeminiAudioCritique,
+                temperature=0.3,
+            ),
+        )
+        if not resp.text:
+            raise RuntimeError(f"{GEMINI_PRO_MODEL} returned no text for the critique; nothing was substituted")
+        critique = GeminiAudioCritique.model_validate_json(resp.text)
+        return {"model": GEMINI_PRO_MODEL, "dsp": dsp_summary, "critique": critique.model_dump()}
 
-    # Deterministic DSP-driven critique fallback when offline or without GEMINI_API_KEY
+    # DSP-only reading: deterministic, and labelled as such
     bands = spectral.get("bands_dbfs", {})
     warnings = spectral.get("warnings", [])
     adjustments: list[PadDeltaRecommendation] = []
@@ -624,4 +628,4 @@ def critique_take_with_gemini(
         fader_recommendations=fader_recs or ["Sidechain Group B & C from Group A pad '.' at length=0.38, shape=0.55"],
         next_scene_variation_idea="Add a 1/32nd DJ Screw double-up stutter on Group C pad '3' at step 24 and trigger reversed pad 'enter' on step 60.",
     )
-    return {"model": "dsp-spectral-critic", "dsp": dsp_summary, "critique": fallback.model_dump()}
+    return {"model": DSP_CRITIC, "note": no_model_note(use_gemini), "dsp": dsp_summary, "critique": fallback.model_dump()}

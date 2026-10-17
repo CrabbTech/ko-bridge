@@ -266,6 +266,10 @@ def get_status() -> dict[str, Any]:
             out["active_project"] = {"error": f"{type(e).__name__}: {e}"}
         finally:
             _device_lock.release()
+    secrets = C.load_secrets()
+    out["gemini"] = {"api_key": "set" if (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")) else "missing",
+                     "secrets_file": secrets.get("file"), "lyria_model": GP.LYRIA_MODEL,
+                     "note": "generate_lyria_chop_group and the Gemini paths of compile_beat_with_gemini / critique_take need the key; the other two fall back to labelled no-model paths without it"}
     if cfg.midi_clock != "in":
         out["notes_for_human"] = ["play_pattern needs MIDI clock set to receive on the device: human_steps('midi_clock_in'), then set_config(midi_clock='in')"]
     return out
@@ -1028,9 +1032,11 @@ def generate_lyria_chop_group(
     upload: bool = True,
     wait: bool | None = None,
 ) -> dict[str, Any]:
-    """Generate a musical sample stem with Google Lyria 3 (`lyria-3-clip-preview` or the built-in vintage Rhodes/Soul
-    engine), apply optional `screw_semitones` turntable pitch/time shift, and auto-chop it across 12 pads of `group`."""
-    stem = GP.generate_lyria_stem(prompt=prompt, bpm=float(bpm), bars=int(bars), samplerate=int(samplerate))
+    """Generate an instrumental loop with Google Lyria 3.5 (a paid call, about $0.08; GEMINI_API_KEY from
+    ~/Music/ko-bridge/secrets.env), apply the optional `screw_semitones` turntable pitch/time shift, and auto-chop it
+    across 12 pads of `group`. When Lyria is unavailable or fails this reports the error: nothing is synthesized in its
+    place (the library holds real samples only)."""
+    stem = GP.generate_lyria_stem(prompt=prompt, bpm=float(bpm), bars=int(bars))
     chop = chop_sample(
         wav_path=stem["wav_path"],
         group=group,
@@ -1058,13 +1064,16 @@ def compile_beat_with_gemini(
     chop_group: Group = "C",
     project: Project | None = None,
     write_to_device: bool = False,
+    use_gemini: bool = True,
     wait: bool | None = None,
 ) -> dict[str, Any]:
-    """Compile a beat description into an EP-133 `ProjectSpec` using `gemini-3.1-pro-preview` (with structured JSON
-    output, 4-tick MIDI clock alignment, MPC swing, lazy snare pocket, DJ Screw 1/32nd double-up stutters, reversed
-    pickup chops on pad `enter`, and slew-compensated fader lanes). Set `write_to_device=True` and pass `project` to
-    write it directly to the EP-133."""
-    plan, model_used = GP.compile_beat_with_gemini(prompt=prompt, bpm=float(bpm), bars=int(bars))
+    """Compile a beat description into an EP-133 `ProjectSpec`: `gemini-3.1-pro-preview` returns the plan as structured
+    JSON (a failed request is reported, not papered over); without GEMINI_API_KEY, or with `use_gemini=False`, a
+    deterministic heuristic plan is used and `model` says so ("heuristic-chop-screw-compiler", no model involved).
+    Either way the plan gets 4-tick MIDI clock alignment, MPC swing, a lazy snare pocket, DJ Screw 1/32nd double-up
+    stutters, reversed pickup chops on pad `enter` and slew-compensated fader lanes. Set `write_to_device=True` and pass
+    `project` to write it to the EP-133."""
+    plan, model_used = GP.compile_beat_with_gemini(prompt=prompt, bpm=float(bpm), bars=int(bars), use_gemini=use_gemini)
     spec, clock_auto = GP.plan_to_project_spec(plan, chop_group=chop_group)
     write_res = None
     if write_to_device:
@@ -1073,6 +1082,7 @@ def compile_beat_with_gemini(
         write_res = _write(project, spec, "gemini-beat", True, wait)
     return {
         "model": model_used,
+        "note": None if model_used == GP.GEMINI_PRO_MODEL else GP.no_model_note(use_gemini),
         "plan": plan.model_dump(),
         "project_spec": spec.model_dump(),
         "clock_automation_pulses": len(clock_auto),
@@ -1084,15 +1094,18 @@ def compile_beat_with_gemini(
 def critique_take(
     take_id: str,
     target_vibe: str = "Houston Chop & Screw beat with warm sub-bass, crisp snare pocket, and smooth sample chops",
+    use_gemini: bool = True,
 ) -> dict[str, Any]:
-    """Closed-loop audio critic: analyzes a recorded take's 4-band spectral balance (sub, low-mid mud, mid, high air),
-    crest factor, clipping, and dual-band onset accuracy, then sends the WAV audio to `gemini-3.1-pro-preview` for
-    structured producer critique and concrete pad/fader/swing adjustments."""
+    """Closed-loop audio critic: a recorded take's 4-band spectral balance (sub, low-mid mud, mid, high air), crest
+    factor, clipping and dual-band onset accuracy, then the WAV itself sent to `gemini-3.1-pro-preview` for a structured
+    producer critique with concrete pad/fader/swing adjustments (the recording leaves the machine). Without
+    GEMINI_API_KEY, or with `use_gemini=False`, the DSP reading comes back alone and `model` says no model was used."""
     info = get_take(take_id)
     return GP.critique_take_with_gemini(
         wav_path=info["wav"],
         grade_report=info.get("grade"),
         target_vibe=target_vibe,
+        use_gemini=use_gemini,
     )
 
 
@@ -1120,6 +1133,7 @@ def cancel_job(job_id: str) -> dict[str, Any]:
 
 
 def run(transport: str = "stdio", host: str = "127.0.0.1", port: int = 8766, path_secret: str | None = None, public: bool = False) -> None:
+    C.load_secrets()   # GEMINI_API_KEY and friends from ~/Music/ko-bridge/secrets.env (or op-bridge's); values are never logged
     if transport == "stdio":
         _server.run(transport="stdio")
         return
