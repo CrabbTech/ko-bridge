@@ -214,3 +214,26 @@ Human steps added: one power cycle (hold the power switch off, wait, power on) a
   and MIDI-based grading for dense beats are proposed as follow-ups.
 - Device state at the end: P9 holds the four-scene song (cursor on the drop), slots 600/601 hold the spike's test tones,
   MIDI clock is internal (100) after the song-mode test, P2 was the active project before the day's work.
+
+## Addendum: dubstep, hands-free rendering, fader slew by rate (same day, evening)
+
+- **On internal clock the device ignores the Mac's START entirely** (measured: two bars of START + clock produced no
+  notes and digital silence). Mac-driven playback therefore needs MIDI clock on receive (101), set once and left; the
+  device's own song mode needs internal clock and can only be started on the device, so the bridge never relies on it.
+- **render_song** records a whole song with nobody at the device: per song position a cursor-only project write (the
+  scenes member changes in exactly one byte, verified offline and on the device), a 6 s settle, START + clock for the
+  scene's longest pattern, recording, MIDI grading, then the pieces are stitched. The 32-bar dubstep song rendered in
+  about 2.5 minutes to a 54.9 s WAV with 666 of 669 expected note-ons (the three missing are same-tick collisions).
+- **Wobble depth versus rate** (low-pass fader lane on the bass group, square between 0.18 and 0.95, 140 BPM, measured
+  as 300-1500 Hz energy per 16th): quarter-note wobble swings about 25 dB (the fader closes and opens fully), eighth-note
+  wobble 5-12 dB, eighth-note triplets about 3 dB, 16ths flatten out. So the group fader slews fully in under ~200 ms
+  but not in ~100 ms; for an audible wobble keep the lane period at an eighth or slower at this tempo.
+- **Sidechain routing** is written from the spec (`fx.sidechain_sources`, `sidechain_destinations`, length, shape); the
+  fx member's routing words read back as authored (kick pads p07+p08 as sources, groups B and C ducked, D cleared).
+- **Concert pitch** worked across three instruments at once (buzz bass at E1 = note 43, reese E2 = 49, sub E1 = 46,
+  cello pluckz E4 = 71), confirmed by the device's note output.
+- Mix: v2 raised the high band about 5 dB by lifting hats, rims and ride and trimming the sub layers; the sub band stays
+  about 8 dB above the low-mids, which suits the genre. No clipping (peak -0.7 dBFS), no gaps between stitched positions.
+- Human steps today: one setting change (MIDI clock to receive, SHIFT+ERASE, 1 0 1, MAIN), done once. The two earlier
+  requests to time a SHIFT+PLAY were a mistake and will not recur; `scripts/record_song.py` remains for recording the
+  device's own song mode when Tyler wants to use it himself.

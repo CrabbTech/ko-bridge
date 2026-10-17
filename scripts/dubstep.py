@@ -24,23 +24,23 @@ BARS = 8
 PADS = [
     # A: drums
     PadSpec(group="A", pad="1", slot=15, amplitude=114),                    # kick 9x9 dirt e: the punch
-    PadSpec(group="A", pad="2", slot=25, amplitude=104),                    # kick sub: the weight (C2, ~2 s)
+    PadSpec(group="A", pad="2", slot=25, amplitude=98),                     # kick sub: the weight (C2, ~2 s)
     PadSpec(group="A", pad="3", slot=110, amplitude=110),                   # snare fat
     PadSpec(group="A", pad="4", slot=304, amplitude=94),                    # clap hard (layer)
     PadSpec(group="A", pad="5", slot=129, amplitude=90),                    # london snare 2 (layer, stereo)
-    PadSpec(group="A", pad="6", slot=211, amplitude=98, choke=True),        # hat closed 8x8
-    PadSpec(group="A", pad="7", slot=228, amplitude=94, choke=True),        # open hat lo
-    PadSpec(group="A", pad="8", slot=142, amplitude=102),                   # rim snap (ghost notes)
+    PadSpec(group="A", pad="6", slot=211, amplitude=118, choke=True),       # hat closed 8x8
+    PadSpec(group="A", pad="7", slot=228, amplitude=110, choke=True),       # open hat lo
+    PadSpec(group="A", pad="8", slot=142, amplitude=112),                   # rim snap (ghost notes)
     PadSpec(group="A", pad="9", slot=352, amplitude=106),                   # tom lo flam
     PadSpec(group="A", pad=".", slot=252, amplitude=84),                    # crash cym
     PadSpec(group="A", pad="0", slot=250, amplitude=80),                    # china 626
-    PadSpec(group="A", pad="enter", slot=237, amplitude=78),                # ride dark
+    PadSpec(group="A", pad="enter", slot=237, amplitude=90),                # ride dark
     # B: bass (key mode: note length and release shape the notes; the low-pass lane is the wobble)
     PadSpec(group="B", pad="1", slot=422, play_mode="key", release=100, amplitude=102),   # buzz bass (C2) wobble voice
-    PadSpec(group="B", pad="2", slot=429, play_mode="key", release=100, amplitude=82),    # reese (G2) body
-    PadSpec(group="B", pad="3", slot=426, play_mode="key", release=130, amplitude=100),   # thirty seven sub (B1)
+    PadSpec(group="B", pad="2", slot=429, play_mode="key", release=100, amplitude=76),    # reese (G2) body
+    PadSpec(group="B", pad="3", slot=426, play_mode="key", release=130, amplitude=90),    # thirty seven sub (B1)
     PadSpec(group="B", pad="4", slot=443, amplitude=102),                                 # growly (C3) stab
-    PadSpec(group="B", pad="5", slot=453, play_mode="key", release=100, amplitude=92),    # phonec grr (C1) second-drop wobble
+    PadSpec(group="B", pad="5", slot=453, play_mode="key", release=100, amplitude=88),    # phonec grr (C1) second-drop wobble
     # C: harmony
     PadSpec(group="C", pad="1", slot=513, play_mode="key", release=150, amplitude=92),    # scary vibes (E4) motif
     PadSpec(group="C", pad="2", slot=542, amplitude=86),                                  # liquid chord em7, plays through
