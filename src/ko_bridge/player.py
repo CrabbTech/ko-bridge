@@ -19,7 +19,8 @@ def _recorder(audio_device: int | None, samplerate: int = 48000) -> Recorder | N
 
 
 def play_pattern(midi: Midi, bpm: float, bars: int, audio_device: int | None = None, pre_roll: float = 0.7, tail: float = 1.0,
-                 stage: Callable[[str], None] | None = None, cancel=None) -> dict[str, Any]:
+                 stage: Callable[[str], None] | None = None, cancel=None,
+                 clock_automation: dict[int, list[dict]] | None = None) -> dict[str, Any]:
     """MIDI START then 24 PPQN clock for `bars` 4/4 bars, STOP at the end; captures the device's MIDI note output and,
     with an audio device, the USB audio. The device must be set to receive MIDI clock (system setting 101)."""
     rec = _recorder(audio_device)
@@ -36,7 +37,9 @@ def play_pattern(midi: Midi, bpm: float, bars: int, audio_device: int | None = N
     try:
         time.sleep(pre_roll)
         check(cancel)
-        driver = ClockDriver(midi, bpm, clocks=int(bars) * 96, send_stop=True, on_start=(lambda: rec.mark("start")) if rec else None)
+        driver = ClockDriver(midi, bpm, clocks=int(bars) * 96, send_stop=True,
+                             on_start=(lambda: rec.mark("start")) if rec else None,
+                             clock_automation=clock_automation)
         if stage:
             stage(f"playing {bars} bars at {bpm:g} BPM")
         driver.start()
@@ -149,29 +152,49 @@ def record(audio_device: int, seconds: float) -> Recording:
 
 
 def grade(recording: Recording, start_sample: int, expected_times_s: list[float], before_ms: float = 40.0, after_ms: float = 160.0) -> dict[str, Any]:
-    """Onsets near each expected time: offsets, matched count, jitter, plus every onset found and silent spans."""
+    """Onsets near each expected time across both high-pass (percussive) and low-band (808/kick/warm chop) signals,
+    plus 4-band spectral mix balance."""
     sr = recording.samplerate
     x = an.mono(recording.audio)
     hp = an.transients(x, sr) if len(x) else np.zeros(0)
+    lp = an.low_transients(x, sr) if len(x) else np.zeros(0)
     expected_samples = [start_sample + int(round(t * sr)) for t in expected_times_s]
-    found = an.onsets_near(hp, sr, expected_samples, before_ms=before_ms, after_ms=after_ms) if len(hp) else [None] * len(expected_samples)
-    absx = np.abs(hp)
+    found_hp = an.onsets_near(hp, sr, expected_samples, before_ms=before_ms, after_ms=after_ms) if len(hp) else [None] * len(expected_samples)
+    found_lp = an.onsets_near(lp, sr, expected_samples, before_ms=before_ms, after_ms=after_ms, rise_db=9.0) if len(lp) else [None] * len(expected_samples)
+    abs_hp = np.abs(hp)
+    abs_lp = np.abs(lp)
     offsets = []
     rows = []
-    for t, es, f in zip(expected_times_s, expected_samples, found):
+    for t, es, fh, fl in zip(expected_times_s, expected_samples, found_hp, found_lp):
+        # A genuine high-band transient reaches at least -30 dBFS (0.0316) in the >2.5 kHz high-passed signal
+        hp_peak = float(np.max(abs_hp[max(0, fh - 288): fh + int(0.02 * sr)])) if fh is not None else 0.0
+        lp_peak = float(np.max(abs_lp[max(0, fl - 288): fl + int(0.04 * sr)])) if fl is not None else 0.0
+        use_high = fh is not None and (hp_peak >= 0.0316 or (fl is None) or (hp_peak >= lp_peak * 0.5))
+        f = fh if use_high else fl
+        band = "high" if use_high else ("low" if fl is not None else None)
         fine = None
         if f is not None:
-            seg = absx[max(0, f - 288): f + 288]
-            hits = np.nonzero(seg > 0.0316)[0]
-            fine = (max(0, f - 288) + int(hits[0])) if len(hits) else f
+            if use_high:
+                seg = abs_hp[max(0, f - 288): f + 288]
+                hits = np.nonzero(seg > 0.0316)[0]
+                fine = (max(0, f - 288) + int(hits[0])) if len(hits) else f
+            else:
+                seg = abs_lp[max(0, f - 480): f + 480]
+                hits = np.nonzero(seg > max(0.02, lp_peak * 0.25))[0]
+                fine = (max(0, f - 480) + int(hits[0])) if len(hits) else f
             offsets.append((fine - es) / sr * 1000.0)
-        rows.append({"expected_s": round(t, 4), "offset_ms": None if f is None else round((fine - es) / sr * 1000.0, 2)})
+        rows.append({"expected_s": round(t, 4), "offset_ms": None if f is None else round((fine - es) / sr * 1000.0, 2),
+                     "band": band})
+    hp_onsets = an.all_onsets(hp, sr) if len(hp) else []
+    lp_onsets = an.all_onsets(lp, sr, rise_db=10.0) if len(lp) else []
+    merged_onsets = sorted(set(hp_onsets + lp_onsets))
     return {"expected": len(expected_times_s), "matched": len(offsets), "offset_stats_ms": an.stats_ms(offsets),
             "jitter_relative_to_first_ms": an.stats_ms([o - offsets[0] for o in offsets]) if offsets else {"n": 0},
             "events": rows,
-            "all_onsets_s": [round((s - start_sample) / sr, 3) for s in an.all_onsets(hp, sr)] if len(hp) else [],
+            "all_onsets_s": [round((s - start_sample) / sr, 3) for s in merged_onsets],
             "silent_spans_s": [(round(a - start_sample / sr, 2), round(b - start_sample / sr, 2)) for a, b in an.silent_spans(x, sr)] if len(x) else [],
-            "peak_dbfs": round(an.peak_db(x), 1) if len(x) else None}
+            "peak_dbfs": round(an.peak_db(x), 1) if len(x) else None,
+            "spectral_mix": an.spectral_mix_report(recording.audio, sr) if len(x) else {}}
 
 
 def levels(recording: Recording) -> dict[str, Any]:

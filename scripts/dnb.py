@@ -56,12 +56,15 @@ PADS = [PadSpec(group=g, pad=p, slot=SLOTS[name], **kw) for (g, p), (name, kw) i
 ROOT = {(p.group, p.pad): p.root for p in PADS}
 
 
+from ko_bridge.groove import snap_step_to_clock
+
+
 def hit(group, bar, step, pad, vel=100, semis=0, steps=1.0) -> NoteEvent:
-    return NoteEvent(pad=pad, step=bar * S + step, note=ROOT[(group, pad)] + semis, velocity=vel, duration=max(1, min(384, int(steps * 24))))
+    return NoteEvent(pad=pad, step=snap_step_to_clock(bar * S + step), note=ROOT[(group, pad)] + semis, velocity=vel, duration=max(1, min(384, int(steps * 24))))
 
 
 def tone(bar, step, pad, name, steps, vel=100) -> NoteEvent:
-    return NoteEvent(pad=pad, step=bar * S + step, concert=name, velocity=vel, duration=max(1, min(384, int(steps * 24))))
+    return NoteEvent(pad=pad, step=snap_step_to_clock(bar * S + step), concert=name, velocity=vel, duration=max(1, min(384, int(steps * 24))))
 
 
 def loop(bar, pad, vel=112) -> NoteEvent:      # a one-bar bass loop on the one, native pitch
@@ -69,8 +72,8 @@ def loop(bar, pad, vel=112) -> NoteEvent:      # a one-bar bass loop on the one,
 
 
 def chord(bar, step, names, steps, vel=90, pads=("6", "7", "8")) -> list[NoteEvent]:
-    """Three pads a tick apart: the device drops notes when many events share one tick (measured: 19 of 172 at bar starts)."""
-    return [tone(bar, step + (k + 1) / 24, pad, name, steps, vel) for k, (pad, name) in enumerate(zip(pads, names))]
+    """Place chord tones on exact 24-PPQN MIDI clock boundaries (0 or +4 ticks) to avoid mid-clock interpolation jitter."""
+    return [tone(bar, step + (k // 2) * (4 / 24), pad, name, steps, vel) for k, (pad, name) in enumerate(zip(pads, names))]
 
 
 EM9 = ("E3", "G3", "B3"); CMAJ7 = ("C3", "E3", "B3"); AM7 = ("A2", "C3", "G3"); BM7 = ("B2", "D3", "A3")   # voiced near the pad's C3

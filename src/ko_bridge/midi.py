@@ -82,6 +82,29 @@ class Midi:
     def note_off(self, note: int, channel: int | None = None) -> float:
         return self.send(mido.Message("note_off", note=note, velocity=0, channel=self.channel if channel is None else channel))
 
+    def cc(self, control: int, value: int, channel: int | None = None) -> float:
+        """Send a MIDI Control Change message (e.g. CC 12 Punch-In FX X, CC 13 Punch-In FX Y, CC 64 Sustain)."""
+        ch = self.channel if channel is None else channel
+        return self.send(mido.Message("control_change", control=max(0, min(127, int(control))), value=max(0, min(127, int(value))), channel=ch))
+
+    def pitchwheel(self, pitch: int, channel: int | None = None) -> float:
+        """Send a 14-bit MIDI Pitch Bend message in [-8192, 8191] (0 = center)."""
+        ch = self.channel if channel is None else channel
+        return self.send(mido.Message("pitchwheel", pitch=max(-8192, min(8191, int(pitch))), channel=ch))
+
+    def pitch_bend_normalized(self, amount: float, channel: int | None = None) -> float:
+        """Send a normalized pitch bend in [-1.0, 1.0] (e.g. -1.0 for tape-stop dive, 0.0 for center)."""
+        clamped = max(-1.0, min(1.0, float(amount)))
+        pitch = int(round(clamped * 8191)) if clamped >= 0 else int(round(clamped * 8192))
+        return self.pitchwheel(pitch, channel=channel)
+
+    def reset_controllers(self, channel: int | None = None) -> None:
+        """Return Pitch Bend to center (0) and release Punch-In FX / Sustain CCs."""
+        ch = self.channel if channel is None else channel
+        self.pitchwheel(0, channel=ch)
+        for ctrl in (1, 12, 13, 64):
+            self.cc(ctrl, 0, channel=ch)
+
     def start(self) -> float:
         return self.send(mido.Message("start"))
 
@@ -96,21 +119,33 @@ class Midi:
             self.send(mido.Message("control_change", control=123, value=0, channel=ch))
 
 
+CC_MODWHEEL = 1
+CC_PUNCH_IN_X = 12
+CC_PUNCH_IN_Y = 13
+CC_SUSTAIN = 64
+
+
 class ClockDriver(threading.Thread):
     """Sends MIDI start, then 24-PPQN clocks at `bpm`, until `clocks` have gone out or `halt()` is called.
 
     `started_at` is the perf_counter time of the start message; `clock_times` are the send times of every clock, so
     sequencer events can be placed against the clock the Mac actually delivered. `send_stop` controls whether a stop
     message follows the last clock (the EP chokes ringing voices on stop).
+
+    Optional `clock_automation` maps 0-based clock pulse index (6 clocks = 1 16th step) to a list of live MIDI
+    dicts (`{"kind": "cc", "control": 12, "value": 90}` or `{"kind": "pitchwheel", "pitch": -4096}`), allowing
+    zero-slew live Punch-In FX and tape-stop pitch dives locked to the 24-PPQN clock.
     """
 
-    def __init__(self, midi: Midi, bpm: float, clocks: int | None = None, send_stop: bool = True, on_start=None):
+    def __init__(self, midi: Midi, bpm: float, clocks: int | None = None, send_stop: bool = True, on_start=None,
+                 clock_automation: dict[int, list[dict]] | None = None):
         super().__init__(name="ko-bridge-clock", daemon=True)
         self.midi = midi
         self.bpm = float(bpm)
         self.clocks = clocks
         self.send_stop = send_stop
         self.on_start = on_start
+        self.clock_automation = clock_automation or {}
         self.started_at: float | None = None
         self.stopped_at: float | None = None
         self.clock_times: list[float] = []
@@ -122,6 +157,18 @@ class ClockDriver(threading.Thread):
 
     def wait_started(self, timeout: float = 5.0) -> bool:
         return self._ready.wait(timeout)
+
+    def _fire_automation(self, clock_idx: int) -> None:
+        for ev in self.clock_automation.get(clock_idx, ()):
+            kind = ev.get("kind")
+            ch = ev.get("channel")
+            if kind == "cc":
+                self.midi.cc(int(ev["control"]), int(ev["value"]), channel=ch)
+            elif kind == "pitchwheel":
+                if "amount" in ev and ev["amount"] is not None:
+                    self.midi.pitch_bend_normalized(float(ev["amount"]), channel=ch)
+                else:
+                    self.midi.pitchwheel(int(ev.get("pitch", 0)), channel=ch)
 
     def run(self) -> None:
         interval = 60.0 / (self.bpm * 24.0)
@@ -138,7 +185,11 @@ class ClockDriver(threading.Thread):
                     break
                 time.sleep(min(0.0005, remaining))
             self.clock_times.append(self.midi.clock())
+            if self.clock_automation:
+                self._fire_automation(sent)
             sent += 1
             next_clock += interval
+        if self.clock_automation:
+            self.midi.reset_controllers()
         if self.send_stop:
             self.stopped_at = self.midi.stop()

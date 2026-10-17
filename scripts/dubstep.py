@@ -57,22 +57,30 @@ PADS = [
 ROOT = {(p.group, p.pad): p.root for p in PADS}
 
 
+from ko_bridge.groove import snap_step_to_clock
+
+
 def hit(group, bar, step, pad, vel=100, semis=0, steps=1.0) -> NoteEvent:
-    return NoteEvent(pad=pad, step=bar * S + step, note=ROOT[(group, pad)] + semis, velocity=vel, duration=max(1, min(384, int(steps * 24))))
+    return NoteEvent(pad=pad, step=snap_step_to_clock(bar * S + step), note=ROOT[(group, pad)] + semis, velocity=vel, duration=max(1, min(384, int(steps * 24))))
 
 
 def tone(bar, step, pad, name, steps, vel=100) -> NoteEvent:
     """A note in concert pitch, resolved through the library's measured pitch of the pad's sample."""
-    return NoteEvent(pad=pad, step=bar * S + step, concert=name, velocity=vel, duration=max(1, min(384, int(steps * 24))))
+    return NoteEvent(pad=pad, step=snap_step_to_clock(bar * S + step), concert=name, velocity=vel, duration=max(1, min(384, int(steps * 24))))
 
 
 def wobble(bar: int, rate: str, lo: float = 0.18, hi: float = 0.95) -> list[LanePoint]:
-    """Low-pass lane points across one bar: a square LFO the group fader slews into a wobble."""
-    period = {"1/4": 4.0, "1/8": 2.0, "1/16": 1.0, "8T": 4.0 / 3.0, "16T": 2.0 / 3.0}[rate]
+    """Low-pass lane points across one bar, clamped to >=2.0 steps (1/8 note) and pre-led by 0.5 steps
+    so the EP-133's ~100 ms group-fader slew reaches peak cutoff on the beat instead of flattening out."""
+    raw_period = {"1/4": 4.0, "1/8": 2.0, "1/16": 2.0, "8T": 8.0 / 3.0, "16T": 2.0}[rate]
+    period = max(2.0, raw_period)
+    lead = 0.5 if bar > 0 else 0.0
     pts, t = [], 0.0
     while t < S - 1e-6:
-        pts.append(LanePoint(step=bar * S + round(t, 3), value=hi))
-        pts.append(LanePoint(step=bar * S + round(min(t + period / 2, S - 0.01), 3), value=lo))
+        open_step = max(0.0, bar * S + t - (lead if t > 0 or bar > 0 else 0.0))
+        close_step = min((bar + 1) * S - 0.25, bar * S + t + period * 0.5)
+        pts.append(LanePoint(step=snap_step_to_clock(open_step), value=hi))
+        pts.append(LanePoint(step=snap_step_to_clock(close_step), value=lo))
         t += period
     return pts
 

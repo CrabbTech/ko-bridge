@@ -24,7 +24,10 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel, Field as Param
 
+from . import chopper as CH
 from . import config as C
+from . import gemini_producer as GP
+from . import groove as GR
 from . import knowledge, player
 from . import library as L
 from . import project as PJ
@@ -877,6 +880,220 @@ def sync_library(wait: bool | None = None) -> dict[str, Any]:
 def rebuild_library(backup: str | None = None) -> dict[str, Any]:
     """Re-index every device slot from the newest backup (or the named backup folder), keeping imports and tags; a few seconds, no device traffic."""
     return L.Library().rebuild_from_backup(backup)
+
+
+# ------------------------------------------------------------------ chopping, groove & Gemini/Lyria producer
+
+@mcp.tool(annotations=RW)
+def chop_sample(
+    wav_path: str,
+    group: Group = "C",
+    mode: CH.ChopMode = "hybrid",
+    num_slices: Annotated[int, Param(ge=1, le=12)] = 12,
+    screw_semitones: Annotated[float, Param(ge=-12.0, le=12.0, description="turntable/SP-1200 pitch+speed shift in semitones (-3.5 for Houston DJ Screw)")] = 0.0,
+    source_bpm: float | None = None,
+    target_bpm: float | None = None,
+    samplerate: SampleRate = 46875,
+    mono: bool = False,
+    reverse_last_pad: bool = True,
+    shared_slot: bool = True,
+    slot: Slot | None = None,
+    project: Project | None = None,
+    upload: bool = True,
+    acknowledge_overwrite: str | None = None,
+    wait: bool | None = None,
+) -> dict[str, Any]:
+    """Auto-chop a loop, breakbeat, or musical stem across up to 12 pads of `group` (default Group C: pads 1..9, 0, ., enter).
+
+    By default (`shared_slot=True`), uploads the resampled/screwed loop into ONE sample slot and assigns all 12 pads
+    using non-destructive `trim_start`/`trim_end` frame boundaries, `choke=True`, and `time_mode='reverse'` on pad
+    `enter` — saving 11 SysEx transfers (~2.5 minutes). Set `upload=False` to preview slice boundaries and PadSpecs
+    without touching the hardware, or pass `project` to immediately assign the 12 pads in that project slot.
+    """
+    audio, pcm, info = CH.prepare_chopped_audio(
+        wav_path,
+        samplerate=samplerate,
+        mono=mono,
+        normalize_dbfs=-1.0,
+        screw_semitones=screw_semitones,
+        source_bpm=source_bpm,
+        target_bpm=target_bpm,
+    )
+    slices = CH.detect_chop_slices(audio, samplerate, num_slices=num_slices, mode=mode, reverse_last_pad=reverse_last_pad)
+    eff_bpm = float(target_bpm or source_bpm or _cfg().default_bpm)
+
+    if not upload:
+        target_slot = int(slot or 600)
+        pads = CH.build_shared_slot_chop_pads(slices, slot=target_slot, group=group, sample_bpm=eff_bpm)
+        return {
+            "uploaded": False,
+            "shared_slot": shared_slot,
+            "slot": target_slot,
+            "group": group,
+            "audio_info": info,
+            "slices": [s.model_dump() for s in slices],
+            "pads": [p.model_dump() for p in pads],
+        }
+
+    if shared_slot:
+        label = os.path.splitext(os.path.basename(wav_path))[0][:NAME_LIMIT]
+        expected = len(pcm) / 24000.0 + len(pcm) / 30000.0 + 4.0 + (15.0 if project else 0.0)
+
+        def work(job: Job | None) -> dict[str, Any]:
+            with _device() as (ep, _c):
+                _stage(job, "listing sound slots")
+                occupied = {int(n["id"]) for n in ep.list_sounds()}
+                target_slot = slot
+                if target_slot is None:
+                    free = ep.free_slots(occupied)
+                    if not free:
+                        raise RuntimeError("no free slot from 600 up; delete_sound frees one")
+                    target_slot = free[0]
+                _stage(job, f"uploading chopped loop ({len(pcm) // 1024} KB) to slot {target_slot}")
+                up_res = ep.upload_sound(
+                    target_slot,
+                    pcm,
+                    name=label,
+                    samplerate=samplerate,
+                    channels=info["channels"],
+                    acknowledge_overwrite=acknowledge_overwrite,
+                    occupied=occupied,
+                )
+                ep.list_sounds()
+                L.Library().note_upload(target_slot, pcm, samplerate, info["channels"], label, wav_path)
+                pads = CH.build_shared_slot_chop_pads(slices, slot=target_slot, group=group, sample_bpm=eff_bpm)
+                proj_res = None
+                if project is not None:
+                    _stage(job, f"assigning 12 chop pads on group {group} in project {project}")
+                    ckpt, base, _s = ep.checkpoint(project, f"before-chop-{group}")
+                    tar, doc = PJ.compile_spec(ProjectSpec(pads=pads), base, {target_slot: info["frames"]})
+                    proj_res = ep.write_project(project, tar, f"chop-{group}", reload=True, base=base)
+                    proj_res["checkpoint"] = str(ckpt)
+                return {
+                    "uploaded": True,
+                    "shared_slot": True,
+                    "slot": target_slot,
+                    "group": group,
+                    "upload": up_res,
+                    "audio_info": info,
+                    "slices": [s.model_dump() for s in slices],
+                    "pads": [p.model_dump() for p in pads],
+                    "project_write": proj_res,
+                }
+
+        return _run_or_job("chop_sample", label, expected, wait, work)
+
+    # Multi-slot crate export + upload
+    crate_dir = C.folder("library", "chops", C.new_id("crate"))
+    exported = CH.export_chop_crate_wavs(audio, samplerate, slices, crate_dir, prefix=os.path.splitext(os.path.basename(wav_path))[0][:8])
+    up = upload_sounds([e["wav"] for e in exported], start_slot=slot, samplerate=samplerate, mono=mono, wait=True)
+    slots = up.get("slots", [])
+    pads = [
+        PadSpec(
+            group=group,
+            pad=sl.pad,
+            slot=slots[i],
+            trim_start=0,
+            trim_end=exported[i]["frames"],
+            sample_bpm=eff_bpm,
+            choke=True,
+            time_mode="off",
+        )
+        for i, sl in enumerate(slices[: len(slots)])
+    ]
+    proj_res = assign_pads(project, pads, wait=True) if (project is not None and pads) else None
+    return {
+        "uploaded": True,
+        "shared_slot": False,
+        "slots": slots,
+        "group": group,
+        "crate_dir": crate_dir,
+        "slices": [s.model_dump() for s in slices],
+        "pads": [p.model_dump() for p in pads],
+        "project_write": proj_res,
+    }
+
+
+@mcp.tool(annotations=RW)
+def generate_lyria_chop_group(
+    prompt: str,
+    bpm: Bpm = 68.0,
+    bars: Bars = 4,
+    group: Group = "C",
+    screw_semitones: float = -3.0,
+    mode: CH.ChopMode = "hybrid",
+    samplerate: SampleRate = 46875,
+    slot: Slot | None = None,
+    project: Project | None = None,
+    upload: bool = True,
+    wait: bool | None = None,
+) -> dict[str, Any]:
+    """Generate a musical sample stem with Google Lyria 3 (`lyria-3-clip-preview` or the built-in vintage Rhodes/Soul
+    engine), apply optional `screw_semitones` turntable pitch/time shift, and auto-chop it across 12 pads of `group`."""
+    stem = GP.generate_lyria_stem(prompt=prompt, bpm=float(bpm), bars=int(bars), samplerate=int(samplerate))
+    chop = chop_sample(
+        wav_path=stem["wav_path"],
+        group=group,
+        mode=mode,
+        num_slices=12,
+        screw_semitones=screw_semitones,
+        source_bpm=float(bpm),
+        samplerate=samplerate,
+        mono=False,
+        reverse_last_pad=True,
+        shared_slot=True,
+        slot=slot,
+        project=project,
+        upload=upload,
+        wait=wait,
+    )
+    return {"stem": stem, "chop": chop}
+
+
+@mcp.tool(annotations=RW)
+def compile_beat_with_gemini(
+    prompt: str,
+    bpm: Bpm = 68.0,
+    bars: Bars = 4,
+    chop_group: Group = "C",
+    project: Project | None = None,
+    write_to_device: bool = False,
+    wait: bool | None = None,
+) -> dict[str, Any]:
+    """Compile a beat description into an EP-133 `ProjectSpec` using `gemini-3.1-pro-preview` (with structured JSON
+    output, 4-tick MIDI clock alignment, MPC swing, lazy snare pocket, DJ Screw 1/32nd double-up stutters, reversed
+    pickup chops on pad `enter`, and slew-compensated fader lanes). Set `write_to_device=True` and pass `project` to
+    write it directly to the EP-133."""
+    plan, model_used = GP.compile_beat_with_gemini(prompt=prompt, bpm=float(bpm), bars=int(bars))
+    spec, clock_auto = GP.plan_to_project_spec(plan, chop_group=chop_group)
+    write_res = None
+    if write_to_device:
+        if project is None:
+            raise ValueError("pass a project slot (1-9) when write_to_device=True")
+        write_res = _write(project, spec, "gemini-beat", True, wait)
+    return {
+        "model": model_used,
+        "plan": plan.model_dump(),
+        "project_spec": spec.model_dump(),
+        "clock_automation_pulses": len(clock_auto),
+        "project_write": write_res,
+    }
+
+
+@mcp.tool(annotations=RO)
+def critique_take(
+    take_id: str,
+    target_vibe: str = "Houston Chop & Screw beat with warm sub-bass, crisp snare pocket, and smooth sample chops",
+) -> dict[str, Any]:
+    """Closed-loop audio critic: analyzes a recorded take's 4-band spectral balance (sub, low-mid mud, mid, high air),
+    crest factor, clipping, and dual-band onset accuracy, then sends the WAV audio to `gemini-3.1-pro-preview` for
+    structured producer critique and concrete pad/fader/swing adjustments."""
+    info = get_take(take_id)
+    return GP.critique_take_with_gemini(
+        wav_path=info["wav"],
+        grade_report=info.get("grade"),
+        target_vibe=target_vibe,
+    )
 
 
 # ------------------------------------------------------------------ jobs
