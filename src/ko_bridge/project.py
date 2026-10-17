@@ -178,12 +178,21 @@ class SceneSpec(BaseModel):
     time_signature: list[int] = Field(default=[4, 4], min_length=2, max_length=2)
 
 
+class SidechainSource(BaseModel):
+    group: Group
+    pad: PadLabel
+
+
 class FxSpec(BaseModel):
     type: Literal["off", "delay", "reverb", "distortion", "chorus", "filter", "compressor"] = "off"
     x: float | None = Field(default=None, ge=0, le=1, description="knob X: delay length, reverb length, drive, modulation, cutoff, drive")
     y: float | None = Field(default=None, ge=0, le=1, description="knob Y: feedback, color, color, feedback, resonance, speed")
     output_compressor_drive: float | None = Field(default=None, ge=0, le=1)
     output_compressor_speed: float | None = Field(default=None, ge=0, le=1)
+    sidechain_sources: list[SidechainSource] = Field(default=[], description="pads whose hits duck the destination groups (note-triggered sidechain)")
+    sidechain_destinations: list[Group] = Field(default=[], description="groups that get ducked")
+    sidechain_length: float | None = Field(default=None, ge=0, le=1, description="duck length (SHIFT+FX knob X)")
+    sidechain_shape: float | None = Field(default=None, ge=0, le=1, description="duck shape (SHIFT+FX knob Y)")
 
 
 class FaderBase(BaseModel):
@@ -200,7 +209,7 @@ class ProjectSpec(BaseModel):
     scene: SceneSpec | None = Field(default=None, description="set scene 1; None keeps the slot's scenes untouched unless patterns are written")
     scenes: list[SceneSpec] = Field(default=[], description="scenes 1..N in order (an arrangement); overrides `scene`")
     song: list[int] = Field(default=[], description="song order as 1-based scene numbers, played by the device's own song mode")
-    current_scene: int = Field(default=1, ge=1, le=99, description="the scene external MIDI START plays")
+    current_scene: int | None = Field(default=None, ge=1, le=99, description="the scene external MIDI START plays (default 1 when scenes are written; alone, it moves the cursor and keeps the scenes)")
     fader_bases: list[FaderBase] = Field(default=[], description="group fader base positions and assignment (settings member)")
     fx: FxSpec | None = None
 
@@ -290,6 +299,23 @@ def scene_one(tar: bytes) -> dict[str, int]:
     return scene_refs(tar, 1)
 
 
+def scenes_from_base(tar: bytes) -> tuple[list["SceneSpec"], list[int]]:
+    """Every defined scene of an archive as SceneSpecs, plus its song order (for cursor-only rewrites)."""
+    files = member_payloads(tar)
+    sc = files.get("scenes")
+    if sc is None or len(sc) != 712:
+        return [], []
+    scenes = []
+    for i in range(99):
+        chunk = sc[7 + i * 6: 13 + i * 6]
+        if not any(chunk[:4]):
+            break
+        scenes.append(SceneSpec(patterns={g: chunk[j] for j, g in enumerate("ABCD") if chunk[j]}, time_signature=[chunk[4] or 4, chunk[5] or 4]))
+    length = sc[7 + 99 * 6 + 11]
+    song = [int(b) for b in sc[7 + 99 * 6 + 12: 7 + 99 * 6 + 12 + length] if b]
+    return scenes, song
+
+
 def find_settings_template(backup_root: str) -> bytes | None:
     """A genuine device-written settings member from the newest backup that has one (never fabricate one)."""
     candidates = sorted(glob.glob(os.path.join(backup_root, "*", "projects", "P*.tar")) + glob.glob(os.path.join(backup_root, "checkpoints", "*.tar")),
@@ -374,12 +400,17 @@ def to_document(spec: ProjectSpec, base: bytes, frames_by_slot: dict[int, int], 
         patterns.append(entry)
 
     scene_list = list(spec.scenes)
+    base_song: list[int] = []
     if not scene_list:
         scene = spec.scene
         if scene is None and spec.patterns and write_scene_for_patterns:
             scene = SceneSpec(patterns={p.group: p.number for p in spec.patterns})
         if scene is not None:
             scene_list = [scene]
+        elif spec.current_scene is not None:           # cursor-only: keep every scene and the song, move the cursor
+            scene_list, base_song = scenes_from_base(base)
+            if not scene_list:
+                raise ValueError("current_scene alone needs a project that already has scenes")
     if scene_list:
         authored = {p["id"] for p in patterns}
         chunks = []
@@ -393,14 +424,15 @@ def to_document(spec: ProjectSpec, base: bytes, frames_by_slot: dict[int, int], 
                     patterns.append({"id": f"{g}{refs[g]:02d}", "bars": 1, "events": []})   # a silent group: an empty pattern member
                     authored.add(f"{g}{refs[g]:02d}")
             chunks.append({"groupPatterns": [refs[g] for g in "ABCD"], "timeSignature": list(scene.time_signature)})
-        song = [int(s) for s in spec.song] or [1]
+        song = [int(s) for s in spec.song] or base_song or [1]
         if any(s < 1 or s > len(chunks) for s in song):
             raise ValueError(f"song {song} references a scene outside 1..{len(chunks)}")
-        if spec.current_scene > len(chunks):
-            raise ValueError(f"current_scene {spec.current_scene} is outside the {len(chunks)} scenes written")
+        cursor = spec.current_scene if spec.current_scene is not None else 1
+        if cursor > len(chunks):
+            raise ValueError(f"current_scene {cursor} is outside the {len(chunks)} scenes written")
         doc["scenes"] = chunks
         doc["song"] = song
-        doc["currentScene"] = spec.current_scene
+        doc["currentScene"] = cursor
     if patterns:
         doc["patterns"] = patterns
 
@@ -427,6 +459,18 @@ def to_document(spec: ProjectSpec, base: bytes, frames_by_slot: dict[int, int], 
         comp = {k: v for k, v in (("drive", spec.fx.output_compressor_drive), ("speed", spec.fx.output_compressor_speed)) if v is not None}
         if comp:
             fx["outputCompressor"] = comp
+        if spec.fx.sidechain_sources or spec.fx.sidechain_destinations:
+            routing: dict[str, dict[str, Any]] = {g: {"sourcePads": [], "destination": False} for g in "ABCD"}   # unnamed groups are cleared
+            for src in spec.fx.sidechain_sources:
+                routing.setdefault(src.group, {}).setdefault("sourcePads", []).append(pad_member_number(src.pad))
+            for g in spec.fx.sidechain_destinations:
+                routing.setdefault(g, {})["destination"] = True
+            side: dict[str, Any] = {"routing": routing}
+            if spec.fx.sidechain_length is not None:
+                side["length"] = spec.fx.sidechain_length
+            if spec.fx.sidechain_shape is not None:
+                side["shape"] = spec.fx.sidechain_shape
+            fx["sidechain"] = side
         doc["fxSettings"] = fx
     return doc
 

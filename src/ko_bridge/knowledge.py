@@ -15,7 +15,9 @@ QUICKSTART = """ko-bridge quickstart: a beat on the EP-133 in five moves.
    whole cycle is about 13 s for a 60 KB project. write_pattern and assign_pads are the short forms.
 5. play_pattern(bpm, bars): MIDI START + clock from the Mac, recording the USB audio and the device's own note output;
    the result grades onsets against the grid (expected within ~4 ms, jitter well under 1 ms). play_notes plays pads
-   live (3.5 ms latency). Listen with get_take / the WAV path.
+   live (3.5 ms latency). render_song(project) records a whole song position by position and stitches it, with nobody at
+   the device. Listen with get_take / the WAV path. Never ask the human to arm or time a recording: the bridge drives
+   playback; the one setting it needs is MIDI clock on receive (101), set once.
 
 Rules the bridge enforces: every write is checkpointed (restore_checkpoint undoes it); sound slots are never
 overwritten or deleted without the acknowledgement string; factory slots 1-599 are protected; system settings are
@@ -75,7 +77,7 @@ Mac's START plays. Unmentioned pads, patterns and members survive."""
 
 HUMAN_STEPS = {
     "system_settings": "System settings: press SHIFT+ERASE. Navigate with - and + and ENTER, or type a setting's code on the pads (e.g. 1 0 1); the display shows the new value briefly. SHIFT+ENTER goes back a page; MAIN returns to the normal screen.",
-    "midi_clock_in": "MIDI clock receive (needed for play_pattern): SHIFT+ERASE, type 1 0 1 on the pads; the display flashes IN; press MAIN. (Observed 2026-10-16: no ENTER needed.) Then tell the bridge with set_config(midi_clock=\"in\").",
+    "midi_clock_in": "MIDI clock receive (needed for play_pattern and render_song; set it once and leave it): SHIFT+ERASE, type 1 0 1 on the pads; the display flashes IN; press MAIN. (Observed 2026-10-16: no ENTER needed.) Then tell the bridge with set_config(midi_clock=\"in\"). On internal clock the device ignores the Mac's START entirely.",
     "midi_clock_out": "MIDI clock send: SHIFT+ERASE, type 1 0 2, MAIN. The device then clocks the Mac; play_pattern cannot start the sequencer in this mode.",
     "midi_clock_off": "MIDI clock off (TE default): SHIFT+ERASE, type 1 0 0, MAIN.",
     "midi_channel": "MIDI channel: SHIFT+ERASE, type 1 1 0 for receive-all/send-1 (default), 1 1 1 .. 1 2 6 for channels 1-16 in and out, 1 2 7 to send only pads with a channel assigned in sound edit; MAIN.",

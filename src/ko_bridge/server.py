@@ -553,31 +553,127 @@ def play_pattern(bpm: Bpm | None = None, bars: Bars = 4, record: bool = True, pr
                 time.sleep(SETTLE_SECONDS)
             active = ep.active_project()
             desc = ep.describe_project(active["project"]) if active.get("project") else {}
-            expected_events = PJ.expected_events(desc, tempo, bars) if desc else []
-            settled = _settle(job)
-            _stage(job, "playing")
-            with Midi(cfg2.midi_hint) as midi:
-                res = player.play_pattern(midi, tempo, bars, audio_device=_audio_index(cfg2, record), stage=lambda t: _stage(job, t), cancel=_cancel(job))
-        out: dict[str, Any] = {"project": active.get("project"), "bpm": tempo, "bars": bars, "midi_note_ons": len(res["midi_note_ons"]),
-                               "first_midi_note_ons": res["midi_note_ons"][:12], "clock_jitter_ms": res["clock_jitter_ms"],
-                               "expected_events": len(expected_events), "settled_seconds": round(settled, 1)}
-        if res.get("note"):
-            out["note"] = res["note"]
-        ons = res["midi_note_ons"]
-        if ons and all(e["time_s"] < 0.05 for e in ons) and bars * 240.0 / tempo > 1.0:
-            out["warning"] = ("the device fired notes only at START and then nothing: the sequencer was not settled (this happens "
-                              "when playback follows FILE traffic too closely); wait about 6 s and play again")
+            out, res, expected_events = _clocked_play(ep, cfg2, desc, tempo, bars, record, job)
+        out["project"] = active.get("project")
         if "recording" in res:
             rec = res["recording"]
             grade = player.grade(rec, res["start_sample"], [e["time_s"] for e in expected_events]) if expected_events else {}
             take = _save_take(_take_id(name or "pattern"), rec, {"kind": "pattern", "bpm": tempo, "bars": bars, "start_sample": res["start_sample"],
                                                                "expected": expected_events, "grade": grade, "midi_note_ons": res["midi_note_ons"]})
             out.update({"take": take, "grade": grade})
-        if cfg2.midi_clock != "in" and res["midi_note_ons"]:
-            C.Config.load()  # the device clearly follows the clock; remember that
-            cfg3 = C.Config.load(); cfg3.midi_clock = "in"; cfg3.save()
         return out
     return _run_or_job("play_pattern", name or "pattern", expected, wait, work)
+
+
+def _clocked_play(ep: EP133, cfg: C.Config, desc: dict[str, Any], tempo: float, bars: int, record: bool, job: Job | None):
+    """Settle after FILE traffic, then START + clock for `bars` bars on the active project; returns (summary, raw result, expected events)."""
+    expected_events = PJ.expected_events(desc, tempo, bars) if desc else []
+    settled = _settle(job)
+    _stage(job, "playing")
+    with Midi(cfg.midi_hint) as midi:
+        res = player.play_pattern(midi, tempo, bars, audio_device=_audio_index(cfg, record), stage=lambda t: _stage(job, t), cancel=_cancel(job))
+    out: dict[str, Any] = {"bpm": tempo, "bars": bars, "midi_note_ons": len(res["midi_note_ons"]), "first_midi_note_ons": res["midi_note_ons"][:12],
+                           "clock_jitter_ms": res["clock_jitter_ms"], "expected_events": len(expected_events), "settled_seconds": round(settled, 1)}
+    if res.get("note"):
+        out["note"] = res["note"]
+    ons = res["midi_note_ons"]
+    if ons and all(e["time_s"] < 0.05 for e in ons) and bars * 240.0 / tempo > 1.0:
+        out["warning"] = ("the device fired notes only at START and then nothing: the sequencer was not settled (this happens "
+                          "when playback follows FILE traffic too closely); wait about 6 s and play again")
+    if ons and cfg.midi_clock != "in":
+        cfg2 = C.Config.load(); cfg2.midi_clock = "in"; cfg2.save()      # the device clearly follows the clock; remember that
+    return out, res, expected_events
+
+
+class ClockNotReceived(RuntimeError):
+    pass
+
+
+@mcp.tool(annotations=RW)
+def render_song(project: Project, positions: list[int] | None = None, bpm: Bpm | None = None, name: str | None = None, wait: bool | None = None) -> dict[str, Any]:
+    """Record a project's whole song from the Mac with nobody at the device: for each song position the scene cursor is
+    moved to its scene (a checkpointed cursor-only write, about 13 s), the scene plays under MIDI clock for the length of
+    its longest pattern and is recorded, and the pieces are stitched into one WAV (plus one take per position with its
+    MIDI grade). The device must be set to receive MIDI clock (101) once; the song mode of the device itself is not used.
+    Runs as a job; cancel_job stops after the current position."""
+    def work(job: Job | None) -> dict[str, Any]:
+        import numpy as np
+
+        with _device() as (ep, cfg):
+            desc = ep.describe_project(project)
+            song = [int(p) for p in (positions or desc.get("song") or [desc.get("scene_cursor") or 1])]
+            tempo = float(bpm or desc.get("bpm") or cfg.default_bpm)
+            scenes = {s["scene"]: s for s in desc.get("scenes", [])}
+            if not scenes:
+                raise RuntimeError(f"project {project} has no scenes to render")
+            original_cursor = int(desc.get("scene_cursor") or 1)
+            active = ep.active_project().get("project")
+            if active != project:
+                _stage(job, f"selecting project {project}")
+                ep.select_project(project)
+            cursor = original_cursor
+            pieces, takes = [], []
+            sr = 48000
+            bar_s = 240.0 / tempo
+            for index, scene_no in enumerate(song):
+                if job is not None and job.cancel.is_set():
+                    break
+                scene = scenes.get(scene_no)
+                if scene is None:
+                    raise RuntimeError(f"song position {index + 1} names scene {scene_no}, which is not defined")
+                bars = max([desc["patterns"][f"{g}{n:02d}"]["bars"] for g, n in scene["patterns"].items() if n and f"{g}{n:02d}" in desc["patterns"]] or [1])
+                if cursor != scene_no:
+                    _stage(job, f"position {index + 1}/{len(song)}: cursor to scene {scene_no}")
+                    base, _m, _s = ep.read_project(project)
+                    tar, _doc = PJ.compile_spec(ProjectSpec(current_scene=scene_no), base, {})
+                    w = ep.write_project(project, tar, f"cursor-{scene_no}", reload=True, base=base)
+                    if not w.get("identical"):
+                        raise RuntimeError(f"cursor write for scene {scene_no} read back differently; checkpoint {w['checkpoint']}")
+                    cursor = scene_no
+                _stage(job, f"position {index + 1}/{len(song)}: scene {scene_no}, {bars} bars")
+                out, res, expected = _clocked_play(ep, cfg, {**desc, "scene_cursor": scene_no}, tempo, bars, True, job)
+                if not res["midi_note_ons"] and expected:
+                    raise ClockNotReceived("the device sent no notes under the Mac's clock: set MIDI clock to receive once "
+                                           "(SHIFT+ERASE, 1 0 1, MAIN) and render again; nothing else is needed at the device")
+                rec = res["recording"]
+                sr = rec.samplerate
+                start = res["start_sample"]
+                length = int(round(bars * bar_s * sr))
+                pieces.append(rec.audio[start: start + length])
+                grade = player.grade(rec, start, [e["time_s"] for e in expected]) if expected else {}
+                take = _save_take(_take_id(f"{name or 'song'}-pos{index + 1}"), rec, {"kind": "pattern", "bpm": tempo, "bars": bars, "scene": scene_no,
+                                                                                      "start_sample": start, "expected": expected, "grade": grade,
+                                                                                      "midi_note_ons": res["midi_note_ons"]})
+                takes.append({"position": index + 1, "scene": scene_no, "bars": bars, "midi_note_ons": out["midi_note_ons"], "expected_events": out["expected_events"],
+                              "take_id": take["take_id"], "warning": out.get("warning")})
+            if cursor != original_cursor:
+                _stage(job, f"cursor back to scene {original_cursor}")
+                base, _m, _s = ep.read_project(project)
+                tar, _doc = PJ.compile_spec(ProjectSpec(current_scene=original_cursor), base, {})
+                ep.write_project(project, tar, f"cursor-{original_cursor}", reload=True, base=base)
+        if not pieces:
+            return {"positions": takes, "note": "nothing rendered"}
+        audio = np.concatenate(pieces, axis=0)
+        from .audio import Recording
+        stitched = Recording(audio=audio, samplerate=sr)
+        take = _save_take(_take_id(name or "song"), stitched, {"kind": "song", "project": project, "bpm": tempo, "song": song[: len(pieces)], "start_sample": 0,
+                                                              "positions": takes})
+        return {"song": take, "bpm": tempo, "seconds": round(len(audio) / sr, 2), "positions": takes}
+    bars_total = 0
+    try:
+        with _device(timeout=1.0) as (ep, cfg):
+            desc = ep.describe_project(project)
+        song = positions or desc.get("song") or [desc.get("scene_cursor") or 1]
+        scenes = {s["scene"]: s for s in desc.get("scenes", [])}
+        for scene_no in song:
+            sc = scenes.get(int(scene_no))
+            if sc:
+                bars_total += max([desc["patterns"][f"{g}{n:02d}"]["bars"] for g, n in sc["patterns"].items() if n and f"{g}{n:02d}" in desc["patterns"]] or [1])
+        tempo = float(bpm or desc.get("bpm") or cfg.default_bpm)
+        expected_seconds = len(song) * (14.0 + SETTLE_SECONDS + 2.0) + bars_total * 240.0 / tempo + 16.0
+    except Exception:
+        expected_seconds = 180.0
+    return _run_or_job("render_song", name or "song", expected_seconds, wait, work)
 
 
 @mcp.tool(annotations=RW)
