@@ -286,3 +286,7 @@ Human steps added: one power cycle (hold the power switch off, wait, power on) a
   (0.5 is neutral, 0.0 an octave down). Risers: pitch and high-pass lanes on held strings. Six scenes rendered hands-free
   with every note-on matched (72, 190, 217, 233, 82, 231), no clipping, 8 dB between break and drop, a written silent
   beat before the last drop. The ten synthesized riddim basses uploaded earlier sit unused in slots 636-645.
+- **Sample names: 19 characters were rejected.** Uploading "reverse_crash_1_bar" (19 ASCII characters) failed at the
+  metadata write with status 1 "invalid length" after the PCM had already landed, leaving a nameless slot ("644.pcm");
+  16-character names had all succeeded. The epsysex docs give 20; ko-bridge now clamps names to 16. The nine synthesized
+  riddim slots (636-644) were deleted at Tyler's request after confirming each one's name.

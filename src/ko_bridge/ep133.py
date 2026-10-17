@@ -204,6 +204,7 @@ class EP133:
             occupied = {int(n["id"]) for n in self.list_sounds()}
         if slot in occupied and acknowledge_overwrite != OVERWRITE_ACK.format(slot=slot):
             raise RuntimeError(f"sound slot {slot} is occupied; to replace it pass acknowledge_overwrite={OVERWRITE_ACK.format(slot=slot)!r}")
+        name = (name or f"slot {slot}")[:16]      # 19 characters were rejected with "invalid length" on this device
         t0 = time.monotonic()
         summary = self.client.upload_sound(slot, pcm, name=name, samplerate=samplerate, channels=channels)
         up_s = time.monotonic() - t0

@@ -92,6 +92,9 @@ SYNC_LIMIT = float(os.environ.get("KO_BRIDGE_SYNC_LIMIT", "25"))
 # After a project switch or reload the device needs a moment: the epsysex docs saw MIDI floods when transport started at
 # once, and this bridge saw the USB audio output stuck on one repeating packet when a note hit 3 s after a switch.
 SETTLE_SECONDS = 6.0
+# Sample names: the epsysex docs say up to 20 ASCII characters, but this device rejected a 19-character name with
+# "invalid length" (metadata set after the PCM had landed, leaving a nameless slot); 16 is safe.
+NAME_LIMIT = 16
 
 RO = ToolAnnotations(read_only_hint=True, open_world_hint=False)
 RW = ToolAnnotations(read_only_hint=False, destructive_hint=False, open_world_hint=False)
@@ -340,7 +343,7 @@ def upload_sound(wav_path: str, slot: Slot | None = None, name: str | None = Non
                  acknowledge_overwrite: str | None = None, wait: bool | None = None) -> dict[str, Any]:
     """Convert a WAV (any rate, mono or stereo) to the device's 16-bit PCM at `samplerate` and upload it into `slot` (default: the first free slot from 600), byte-verified by reading it back. Replacing an occupied slot needs acknowledge_overwrite="OVERWRITE SOUND N". Long files run as a job (~24 KB/s)."""
     pcm, info = _wav_to_pcm(wav_path, samplerate, mono, normalize_dbfs)
-    label = (name or os.path.splitext(os.path.basename(wav_path))[0])[:20]
+    label = (name or os.path.splitext(os.path.basename(wav_path))[0])[:NAME_LIMIT]
     expected = len(pcm) / 24000.0 + len(pcm) / 30000.0 + 3.0
 
     def work(job: Job | None) -> dict[str, Any]:
@@ -368,7 +371,7 @@ def upload_sound(wav_path: str, slot: Slot | None = None, name: str | None = Non
 def upload_sounds(wav_paths: list[str], start_slot: Slot | None = None, samplerate: SampleRate = 46875, mono: bool = True,
                   normalize_dbfs: float | None = None, wait: bool | None = None) -> dict[str, Any]:
     """Upload several WAVs into consecutive free slots (from start_slot, default the first free from 600), each byte-verified; runs as a job (a 12-chop crate of 2 s chops takes about 3 minutes)."""
-    prepared = [(_wav_to_pcm(p, samplerate, mono, normalize_dbfs), os.path.splitext(os.path.basename(p))[0][:20], p) for p in wav_paths]
+    prepared = [(_wav_to_pcm(p, samplerate, mono, normalize_dbfs), os.path.splitext(os.path.basename(p))[0][:NAME_LIMIT], p) for p in wav_paths]
     total = sum(len(pcm) for (pcm, _i), _n, _p in prepared)
     expected = total / 24000.0 + total / 30000.0 + 3.0 * len(prepared)
 
