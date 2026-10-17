@@ -66,6 +66,12 @@ DRUMS = [  # factory slots, picked from the library index for a dusty trip hop k
 SUB = PadSpec(group="B", pad=".", slot=407, amplitude=100, play_mode="key", release=140)   # upright sub; the library hears it a semitone low (true G1)
 SUB_ROOT_OFFSET = -2   # semitones from the sub's native pitch to F1
 
+MIX = {   # pad amplitude changes per version (v1 = as first rendered; measured dark: high band -44 dBFS, mids -22 against bass -15)
+    "v1": {},
+    "v2": {("A", "1"): 88, ("A", "2"): 82, ("A", "4"): 72, ("A", "5"): 78, ("A", "3"): 90, ("A", "7"): 88,
+           "vocal": 108, "trumpet": 106, "guitar": 94, "strings": 84},
+}
+
 
 def ev(pad, bar, step, vel=100, beats=1.0, semis=None):
     return NoteEvent(pad=pad, step=bar * S + step, velocity=vel, duration=max(4, min(384, int(round(beats * 24 * 4)))), semitones=semis)
@@ -186,12 +192,13 @@ def prepare_pieces(manifest: dict, stamp: str) -> dict[str, dict]:
     return out
 
 
-def build_spec(prep: dict[str, dict], slots: dict[str, int]) -> ProjectSpec:
-    pads: list[PadSpec] = list(DRUMS) + [SUB]
+def build_spec(prep: dict[str, dict], slots: dict[str, int], mix: str = "v1") -> ProjectSpec:
+    mx = MIX[mix]
+    pads: list[PadSpec] = [d.model_copy(update={"amplitude": mx.get((d.group, d.pad), d.amplitude)}) for d in DRUMS] + [SUB]
     for name, pr in prep.items():
         cfg = pr["cfg"]
         chop_pads = CH.build_shared_slot_chop_pads(pr["slices"], slot=slots[name], group=cfg["group"], sample_bpm=BPM,
-                                                   amplitude=cfg["amplitude"], choke=cfg["choke"], play_mode=cfg["play_mode"])
+                                                   amplitude=mx.get(name, cfg["amplitude"]), choke=cfg["choke"], play_mode=cfg["play_mode"])
         pads += [cp.model_copy(update={"release": cfg["release"]}) for cp in chop_pads]
     vocal_pads, trumpet_pads, guitar_pads = list(PIECES["vocal"]["pads"]), list(PIECES["trumpet"]["pads"]), list(PIECES["guitar"]["pads"])
     patterns = [
@@ -231,6 +238,8 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--render-only", action="store_true")
     ap.add_argument("--name", default="triphop-v1")
+    ap.add_argument("--mix", default="v1", choices=sorted(MIX), help="pad amplitude profile")
+    ap.add_argument("--reuse-slots", action="store_true", help="skip the uploads; take the chop slots from the newest build note")
     a = ap.parse_args()
     manifest_path = a.manifest or sorted(glob.glob(os.path.join(NOTES, "lyria-triphop-*.json")))[-1]
     manifest = json.load(open(manifest_path))
@@ -241,18 +250,24 @@ def main() -> int:
         prep = prepare_pieces(manifest, stamp)
         note["pieces"] = {n: {k: v for k, v in pr.items() if k not in ("slices", "cfg")} | {"slices": [s.model_dump() for s in pr["slices"]]} for n, pr in prep.items()}
         if a.dry_run:
-            spec = build_spec(prep, {n: 900 + i for i, n in enumerate(prep)})
+            spec = build_spec(prep, {n: 900 + i for i, n in enumerate(prep)}, mix=a.mix)
             print(json.dumps({"patterns": [(p.id, p.bars, len(p.events), [l.parameter for l in p.lanes]) for p in spec.patterns],
                               "pads": len(spec.pads), "scenes": [s.patterns for s in spec.scenes], "song": spec.song,
                               "chops": {n: [(s.pad, s.start_frame, s.end_frame - s.start_frame, s.kind) for s in pr["slices"]] for n, pr in prep.items()}}, indent=1))
             return 0
         slots: dict[str, int] = {}
-        for name, pr in prep.items():
-            up = srv.upload_sound(pr["chop_wav"], name=f"th {name}"[:16], samplerate=SR, mono=pr["cfg"]["mono"], wait=True)
-            slots[name] = int(up["slot"])
-            print(f"uploaded {name} -> slot {slots[name]} ({up.get('bytes')} B, verified {up.get('verified', up.get('identical'))})", file=sys.stderr)
+        if a.reuse_slots:
+            prev = [n for n in sorted(glob.glob(os.path.join(NOTES, "triphop-build-*.json"))) if json.load(open(n)).get("slots")]
+            slots = {k: int(v) for k, v in json.load(open(prev[-1]))["slots"].items()}
+            print("reusing slots", slots, "from", os.path.basename(prev[-1]), file=sys.stderr)
+        else:
+            for name, pr in prep.items():
+                up = srv.upload_sound(pr["chop_wav"], name=f"th {name}"[:16], samplerate=SR, mono=pr["cfg"]["mono"], wait=True)
+                slots[name] = int(up["slot"])
+                print(f"uploaded {name} -> slot {slots[name]} ({up.get('bytes')} B, verified {up.get('verified', up.get('identical'))})", file=sys.stderr)
         note["slots"] = slots
-        spec = build_spec(prep, slots)
+        note["mix"] = a.mix
+        spec = build_spec(prep, slots, mix=a.mix)
         wr = srv.write_project(PROJECT, spec, reload=True, wait=True)
         note["write"] = {k: wr.get(k) for k in ("identical", "payloads_identical", "checkpoint", "bytes", "write_seconds")}
         print("P9 written:", note["write"], file=sys.stderr)
