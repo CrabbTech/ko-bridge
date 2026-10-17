@@ -79,5 +79,12 @@ def test_project_spec_compiles_over_a_saved_archive():
     c02 = desc["patterns"]["C02"]
     assert [e["step"] for e in c02["events"]] == [0, 8] and c02["events"][0]["note"] == 60
     assert c02["lanes"]["lowpass"][1]["value"] == pytest.approx(0.4, abs=1e-3)
-    assert desc["scenes"][0]["patterns"] == {"A": 1, "B": 1, "C": 2, "D": 1} and desc["scene_cursor"] == 1
-    assert "B01" in desc["patterns"] and desc["patterns"]["B01"]["events"] == []  # silent groups get empty members
+    base_desc = PJ.describe(base)   # the archive comes from the newest backup, so derive the expectations from it
+    base_scene1 = next((sc["patterns"] for sc in base_desc["scenes"] if sc["scene"] == 1), {})
+    expected = {g: base_scene1.get(g, 1) for g in "ABD"} | {"C": 2}   # groups left out keep the base's scene-1 reference
+    assert desc["scenes"][0]["patterns"] == expected and desc["scene_cursor"] == 1
+    for g in "ABD":
+        pid = f"{g}{expected[g]:02d}"
+        assert pid in desc["patterns"], pid   # every referenced pattern exists (the device rejects partial scenes)
+        if pid not in base_desc["patterns"]:
+            assert desc["patterns"][pid]["events"] == []   # silent groups get empty members
