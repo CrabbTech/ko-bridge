@@ -87,6 +87,13 @@ def test_without_a_key_lyria_raises_and_the_other_paths_say_no_model(no_key, tmp
     assert GP.no_model_note(False) == GP.NO_MODEL_REQUESTED_NOTE
 
 
+def test_error_text_never_carries_the_key(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "AIzaFAKEKEY1234567890")
+    scrubbed = GP._scrub("400 for https://example/v1?key=AIzaFAKEKEY1234567890 with header AIzaFAKEKEY1234567890", api_key="explicit-key-value")
+    assert "AIzaFAKEKEY1234567890" not in scrubbed and scrubbed.count("<GEMINI_API_KEY>") == 2
+    assert GP._scrub("explicit-key-value in a message", api_key="explicit-key-value") == "<GEMINI_API_KEY> in a message"
+
+
 def test_request_schemas_are_accepted_by_the_sdk():
     """generate_content converts the Pydantic schema before any request; lt=64 (exclusiveMaximum) once failed here."""
     from google.genai import _transformers as T

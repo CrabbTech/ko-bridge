@@ -148,6 +148,13 @@ def _api_key(api_key: str | None = None) -> str | None:
     return os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
 
 
+def _scrub(text: str, api_key: str | None = None) -> str:
+    """`text` with every configured key value replaced, so an SDK error that echoes a request can never leak the key."""
+    for key in {api_key, os.environ.get("GEMINI_API_KEY"), os.environ.get("GOOGLE_API_KEY")} - {None, ""}:
+        text = text.replace(key, "<GEMINI_API_KEY>")
+    return text
+
+
 def _get_client(api_key: str | None = None):
     """A google-genai client, or GeminiUnavailable saying exactly what is missing (never None)."""
     key = _api_key(api_key)
@@ -206,14 +213,14 @@ def generate_lyria_stem(
     try:
         interaction = client.interactions.create(timeout=timeout_s, **body)
     except Exception as e:   # the SDK's own errors (APIError, httpx timeouts): report them, never substitute audio
-        raise LyriaError(f"Lyria request failed: {type(e).__name__}: {e}") from e
+        raise LyriaError(_scrub(f"Lyria request failed: {type(e).__name__}: {e}", api_key)) from e
     status = getattr(interaction, "status", None)
     if status not in (None, "completed"):
-        raise LyriaError(f"Lyria interaction {getattr(interaction, 'id', '?')} ended with status {status!r}: {getattr(interaction, 'errors', None)}")
+        raise LyriaError(_scrub(f"Lyria interaction {getattr(interaction, 'id', '?')} ended with status {status!r}: {getattr(interaction, 'errors', None)}", api_key))
     audio = _audio_block(interaction)
     if audio is None:
         text = str(getattr(interaction, "output_text", "") or "")[:200]
-        raise LyriaError(f"Lyria returned no audio block (status {status!r}; text {text!r})")
+        raise LyriaError(_scrub(f"Lyria returned no audio block (status {status!r}; text {text!r})", api_key))
     raw = _audio_bytes(audio)
     try:
         data, sr = sf.read(io.BytesIO(raw), dtype="float32", always_2d=True)
@@ -229,7 +236,7 @@ def generate_lyria_stem(
         "full_wav_path": full_path,
         "source": LYRIA_MODEL,
         "model": LYRIA_MODEL,
-        "interaction_id": getattr(interaction, "id", None),
+        "interaction_id": getattr(interaction, "id", None),   # Google's opaque trace id for the billing record; no field here carries the key
         "prompt": full_prompt,
         "mime_type": getattr(audio, "mime_type", None),
         "samplerate": sr,
