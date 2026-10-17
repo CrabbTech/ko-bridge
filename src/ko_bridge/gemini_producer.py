@@ -436,7 +436,7 @@ def plan_to_project_spec(
                 )
             )
 
-    chop_lane = GR.make_filter_swell_lane(bars=bars, parameter="lowpass", low_val=max(0.35, plan.lowpass_base - 0.2), high_val=plan.lowpass_base)
+    chop_lane = GR.make_filter_swell_lane(bars=bars, parameter="lowpass", low_val=max(0.35, plan.lowpass_base - 0.2), high_val=plan.lowpass_base, bpm=plan.bpm)
     pat_c = PatternSpec(group=chop_group, number=pattern_number, bars=bars, events=chop_events, lanes=[chop_lane])
 
     patterns = [pat_a, pat_b, pat_c]

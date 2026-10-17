@@ -217,17 +217,27 @@ def compensate_fader_slew(
     bars: int = 4,
     lead_steps: float = 0.5,
     min_step_gap: float = 1.0,
+    bpm: float | None = None,
+    lead_ms: float = 120.0,
 ) -> list[LanePoint]:
-    """Compensate for the EP-133's ~100 ms internal group-fader slew and remove unplayable LFO spam.
+    """Compensate for the EP-133's group-fader slew and remove unplayable LFO spam.
+
+    Measured (docs/spike-results.md): a fader change is not complete within ~60 ms and is complete within ~200 ms, so
+    the lead is a time, not a step count: 0.5 step is 110 ms at 68 BPM but only 43 ms at 174 BPM. With `bpm` given
+    the lead is `lead_ms` converted to ticks (snapped to the 4-tick clock grid); without it `lead_steps` is used.
 
     1. Thins points closer than `min_step_gap` steps (since the hardware fader cannot track 1/16th LFOs).
-    2. Pre-leads large step jumps (`|dv| >= 0.15` after `tick > 0`) by `lead_steps` (`0.5` steps = `12` ticks)
-       so the fader reaches its target value *before* the beat transient fires.
+    2. Pre-leads large step jumps (`|dv| >= 0.15` after `tick > 0`) by the lead so the fader reaches its target value
+       *before* the beat transient fires.
     """
     if not points:
         return []
     max_ticks = bars * BAR_TICKS
-    lead_ticks = snap_tick_to_clock(int(round(lead_steps * STEP_TICKS)))
+    if bpm:
+        lead_ticks = snap_tick_to_clock(int(round(lead_ms / 1000.0 * float(bpm) / 60.0 * 4 * STEP_TICKS)))
+    else:
+        lead_ticks = snap_tick_to_clock(int(round(lead_steps * STEP_TICKS)))
+    lead_ticks = max(CLOCK_TICKS, lead_ticks)
     min_gap_ticks = max(CLOCK_TICKS, int(round(min_step_gap * STEP_TICKS)))
 
     ordered = sorted(points, key=lambda p: p.tick_value())
@@ -256,12 +266,13 @@ def make_filter_swell_lane(
     low_val: float = 0.38,
     high_val: float = 0.95,
     peak_bar: int = 3,
+    bpm: float | None = None,
 ) -> Lane:
-    """Create a musical phrase-level filter or level swell lane that respects the EP-133's fader slew."""
+    """Create a musical phrase-level filter or level swell lane that respects the EP-133's fader slew (lead in ms when `bpm` is given)."""
     raw = [
         LanePoint(step=0.0, value=low_val),
         LanePoint(step=max(2.0, (peak_bar - 1) * 16.0), value=round((low_val + high_val) * 0.5, 3)),
         LanePoint(step=max(4.0, peak_bar * 16.0 - 4.0), value=high_val),
         LanePoint(step=bars * 16.0 - 2.0, value=low_val),
     ]
-    return Lane(parameter=parameter, points=compensate_fader_slew(raw, bars=bars))
+    return Lane(parameter=parameter, points=compensate_fader_slew(raw, bars=bars, bpm=bpm))

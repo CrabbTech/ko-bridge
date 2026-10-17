@@ -44,7 +44,9 @@ def test_chopper_shared_slot_and_screw_resample(tmp_path):
     assert len(pads) == 12
     assert all(p.slot == 610 and p.choke is True for p in pads)
     assert pads[-1].time_mode == "reverse"
-    assert all(0 <= p.trim_start < p.trim_end <= len(audio) for p in pads)
+    # trim_end is the slice LENGTH (what the pad record stores), so start + length stays inside the uploaded audio
+    assert all(p.trim_end >= 1 and p.trim_start + p.trim_end <= len(audio) for p in pads)
+    assert pads[1].trim_start == slices[1].start_frame and pads[1].trim_end == slices[1].end_frame - slices[1].start_frame
 
 
 def test_groove_clock_alignment_swing_stutters_and_fader_slew():

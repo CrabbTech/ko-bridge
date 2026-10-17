@@ -17,6 +17,7 @@ device so they can run side by side.
 | Sample library (slots 1-999, 128 MB) | `list_sounds`, `describe_sound`, `audition_sound`, `upload_sound` (any WAV, converted and byte-verified), `upload_sounds` (a crate, as a job), `delete_sound` (acknowledgement string, factory banks protected) |
 | Projects (slots 1-9) | `describe_project`, `write_project` (pads, patterns, fader lanes, scene, BPM, FX from a typed spec, compiled over the slot's current archive), `assign_pads`, `write_pattern`, `select_project`, `list_checkpoints`, `restore_checkpoint`, `backup_device` |
 | Playing and listening | `play_pattern` (MIDI START + clock, records and grades onsets against the grid), `play_notes` (live pads with measured latency), `record_audio`, `list_takes`, `get_take`, `measure_take` |
+| Chopping, groove and producer tools (merged from Gemini's branch, under review) | `chop_sample` (slice a loop across 12 pads of one group from a single shared slot via trim start/length), `generate_lyria_chop_group`, `compile_beat_with_gemini`, `critique_take` (needs `GEMINI_API_KEY` in the environment for the cloud paths) |
 | Jobs | `job_status`, `list_jobs`, `cancel_job` |
 
 Every project write is checkpointed, read back and compared byte for byte, then reloaded on the device. Playback keeps a

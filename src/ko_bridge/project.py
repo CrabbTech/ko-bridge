@@ -79,7 +79,7 @@ class PadSpec(BaseModel):
     pad: PadLabel = Field(description='keypad label: "." "0" "enter" or "1".."9"')
     slot: int = Field(ge=0, le=999, description="sample slot 1-999; 0 clears the pad")
     trim_start: int = Field(default=0, ge=0, description="frames at the sample's native rate")
-    trim_end: int | None = Field(default=None, ge=1, description="trim length in frames; None = the whole sample")
+    trim_end: int | None = Field(default=None, ge=1, description="trim LENGTH in frames from trim_start (not an end frame; the device resets a pad whose start + length exceeds the sample to the whole sample); None = the whole sample")
     sample_bpm: float = Field(default=120.0, ge=1, le=399)
     amplitude: int = Field(default=100, ge=0, le=200, description="100 = unity, ~0.5 dB per unit below")
     pitch: int = Field(default=0, ge=-12, le=12, description="semitones")

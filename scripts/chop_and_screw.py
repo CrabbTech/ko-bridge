@@ -13,7 +13,7 @@ Demonstrates the upgraded musical pipeline in `ko-bridge`:
 
 Run offline dry-run:
     uv run python scripts/chop_and_screw.py --dry-run
-Run on connected EP-133 (project 9):
+Run on connected EP-133 (project 9; the loop goes to the first free sample slot from 600):
     uv run python scripts/chop_and_screw.py --project 9
 """
 from __future__ import annotations
@@ -36,7 +36,7 @@ DRUM_PADS = [
 ]
 
 BASS_PADS = [
-    PadSpec(group="B", pad=".", slot=403, amplitude=112, play_mode="legato", choke=True),  # deep sub / 808
+    PadSpec(group="B", pad=".", slot=403, amplitude=112, play_mode="legato", choke=False),  # deep sub / 808; choke is the device's one global mute group, so a choke bass would cut the chops
 ]
 
 
@@ -71,10 +71,13 @@ def build_chop_and_screw_project(
     return {
         "model": model_used,
         "stem": stem,
+        "audio": audio,
         "audio_info": audio_info,
         "pcm": pcm,
+        "slice_objs": slices,
         "slices": [s.model_dump() for s in slices],
-        "plan": plan.model_dump(),
+        "plan": plan,
+        "chop_slot": chop_slot,
         "spec": spec,
         "clock_automation": clock_auto,
     }
@@ -85,7 +88,9 @@ def main() -> None:
     parser.add_argument("--prompt", default="Houston DJ Screw chopped soul Rhodes & horn beat at 68 BPM with double-up stutters on bar 2 and 4")
     parser.add_argument("--bpm", type=float, default=68.0)
     parser.add_argument("--screw", type=float, default=-3.5, help="Turntable pitch/speed shift in semitones")
-    parser.add_argument("--slot", type=int, default=605, help="Shared sample slot for the 12-pad chopped loop")
+    parser.add_argument("--slot", type=int, default=None, help="Sample slot for the chopped loop (default: the first free slot from 600; an occupied slot needs --overwrite)")
+    parser.add_argument("--overwrite", action="store_true", help="Allow overwriting the sound already in --slot (otherwise an occupied slot is refused)")
+    parser.add_argument("--allow-synth", action="store_true", help="Upload the built-in synthesized fallback stem when Lyria is unavailable (the library rule is real samples only)")
     parser.add_argument("--project", type=int, default=9, help="EP-133 project slot (1-9)")
     parser.add_argument("--dry-run", action="store_true", help="Compile offline without writing to the hardware")
     args = parser.parse_args()
@@ -94,12 +99,13 @@ def main() -> None:
         prompt=args.prompt,
         bpm=args.bpm,
         screw_semitones=args.screw,
-        chop_slot=args.slot,
+        chop_slot=args.slot or 600,   # placeholder when no slot is given; the pads are rebuilt for the slot actually used
     )
 
     if args.dry_run:
         summary = {
             "model": built["model"],
+            "plan_title": built["plan"].title,
             "stem": built["stem"],
             "audio_info": built["audio_info"],
             "slices_count": len(built["slices"]),
@@ -114,17 +120,29 @@ def main() -> None:
         print(json.dumps(summary, indent=2))
         return
 
+    import soundfile as sf
+
     from ko_bridge import server as srv
 
+    if str(built["stem"].get("source", "")).startswith("fallback") and not args.allow_synth:
+        raise SystemExit("the stem is the built-in synthesized fallback (no Lyria access): the library holds real samples only; "
+                         "pass --allow-synth to upload it anyway")
+    # Upload the PROCESSED audio (screwed, resampled, normalised): the slice frames were measured on it, not on the source stem.
+    processed = built["stem"]["wav_path"].replace(".wav", f"-screw{args.screw:+.1f}.wav")
+    sf.write(processed, built["audio"], 46875, subtype="PCM_16")
     up = srv.upload_sound(
-        built["stem"]["wav_path"],
+        processed,
         slot=args.slot,
         name="screw-stem",
         samplerate=46875,
         mono=False,
-        acknowledge_overwrite=f"OVERWRITE SOUND {args.slot}",
+        acknowledge_overwrite=f"OVERWRITE SOUND {args.slot}" if (args.slot and args.overwrite) else None,
         wait=True,
     )
+    if up["slot"] != built["chop_slot"]:
+        chop_pads = CH.build_shared_slot_chop_pads(built["slice_objs"], slot=up["slot"], group="C", sample_bpm=args.bpm)
+        built["spec"], built["clock_automation"] = GP.plan_to_project_spec(
+            built["plan"], chop_pads=chop_pads, drum_pads=DRUM_PADS, bass_pads=BASS_PADS, chop_group="C", build_two_scenes=True)
     wr = srv.write_project(args.project, built["spec"], reload=True, wait=True)
     print(json.dumps({"upload": up["slot"], "project": wr["project"], "identical": wr["identical"]}, indent=2))
 

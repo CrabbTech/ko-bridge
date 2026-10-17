@@ -6,8 +6,10 @@ breakbeats (Amen, Think, Apache), and Lyria 3 loops across a 12-pad group (C or 
 
 1. **Shared-Slot Non-Destructive Trim Mode** (`build_shared_slot_chop_pads`):
    Uploads the loop (optionally pitched/screwed or BPM-matched) into a *single* sample slot and
-   assigns all 12 pads in the group to that slot with frame-accurate `trim_start` and `trim_end`
-   boundaries, `choke=True` (shared mute group), and `time_mode="reverse"` on the turnaround pad.
+   assigns all 12 pads in the group to that slot with a frame-accurate `trim_start` and a `trim_end` that is
+   the slice LENGTH (the pad record stores a length, not an end frame: a pad whose start + length exceeds
+   the sample is reset by the device to the whole sample; verified on the EP-133 2026-10-17), `choke=True`
+   (shared mute group), and `time_mode="reverse"` on the turnaround pad.
    Saves 11 SysEx uploads (~2.5 minutes of transfer time) while preserving instant hardware chop playability.
 
 2. **Multi-Slot Pre-Sliced Crate Mode** (`export_chop_crate_wavs`):
@@ -327,7 +329,10 @@ def build_shared_slot_chop_pads(
     choke: bool = True,
     play_mode: Literal["oneshot", "key", "legato"] = "oneshot",
 ) -> list[PadSpec]:
-    """Build 12 `PadSpec` records referencing a single uploaded sample slot via non-destructive `trim_start`/`trim_end`."""
+    """Build 12 `PadSpec` records referencing a single uploaded sample slot via a non-destructive trim start and LENGTH.
+
+    `PadSpec.trim_end` is the trimmed length in frames (what the device stores), so a slice [start, end) becomes
+    trim_start=start, trim_end=end-start; start + length never exceeds the slice's end frame."""
     pads: list[PadSpec] = []
     for sl in slices:
         pads.append(
@@ -336,7 +341,7 @@ def build_shared_slot_chop_pads(
                 pad=sl.pad,
                 slot=int(slot),
                 trim_start=int(sl.start_frame),
-                trim_end=int(sl.end_frame),
+                trim_end=max(1, int(sl.end_frame - sl.start_frame)),
                 sample_bpm=float(sample_bpm),
                 amplitude=int(amplitude),
                 pitch=max(-12, min(12, int(pitch + sl.pitch_semitones))),

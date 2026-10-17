@@ -70,6 +70,9 @@ def _env_db(x: np.ndarray, sr: int, win_ms: float = 1.0) -> np.ndarray:
 
 _PITCH_CLASSES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
 _FLAT_TO_SHARP = {"DB": "C#", "EB": "D#", "GB": "F#", "AB": "G#", "BB": "A#"}
+_TONAL_WORDS = {"bass", "reese", "growl", "wub", "chord", "chords", "stab", "key", "keys", "note", "pad", "lead", "pluck",
+                "piano", "epiano", "rhodes", "organ", "synth", "arp", "bell", "string", "strings", "vox", "vocal", "choir", "root", "tone",
+                "in", "808"}
 
 
 def parse_note_from_name(name: str | None) -> dict[str, Any] | None:
@@ -95,6 +98,12 @@ def parse_note_from_name(name: str | None) -> dict[str, Any] | None:
         letter = m.group(1).upper()
         acc = m.group(2)
         oct_str = m.group(3)
+        # A bare letter (no octave, no accidental) is a variant marker in TE's naming ("nt kick b", "snare mini bm":
+        # 46 factory names) unless a tonal word precedes it ("dubstep bass e", "chord em7").
+        if oct_str is None and not acc:
+            prev = tokens[idx - 1].lower() if idx > 0 else ""
+            if prev not in _TONAL_WORDS:
+                continue
         pc = letter + ("#" if acc == "#" else "")
         if acc == "b":
             pc = _FLAT_TO_SHARP.get(letter + "B", letter)
@@ -195,8 +204,8 @@ def features(x: np.ndarray, sr: int, channels: int = 1, name: str | None = None)
         hint_pc_idx = _PITCH_CLASSES.index(hint["pitch_class"])
         meas_pc_idx = int(round(midi)) % 12
         diff = (meas_pc_idx - hint_pc_idx) % 12
-        if diff == 7:  # 3rd harmonic (12 + 7 = 19 semitones above fundamental)
-            midi = round(midi) - 7.0
+        if diff == 7:  # 3rd harmonic: 19.02 semitones above the fundamental (an octave and a fifth), so drop 19, not 7
+            midi = round(midi) - 19.0
             f0 = float(440.0 * (2.0 ** ((midi - 69.0) / 12.0)))
 
     # spectral flatness (0 tonal .. 1 noisy), bandwidth and the share of energy in body (150-800) and presence (800-4000) bands

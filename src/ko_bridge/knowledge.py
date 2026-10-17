@@ -73,10 +73,11 @@ PROJECT_FORMAT = """write_project spec (JSON):
  "fader_bases": [ {"group": "C", "parameter": "fx", "value": 0.3} ],
  "fx": {"type": "reverb", "x": 0.4, "y": 0.5, "output_compressor_drive": 0.2}
 }
-step = 16th notes from the pattern start (24 ticks); tick is the alternative (96 per beat, 384 per bar). trim_start and
-trim_end are frame indices at the sample's native rate; trim_end=null means the end of the sample (looked up on the device).
-Shared-Slot Chopping: chop_sample(wav_path, group="C", shared_slot=True) uploads a loop once and sets trim_start/trim_end
-across all 12 pads of the group with choke=True and time_mode="reverse" on pad "enter".
+step = 16th notes from the pattern start (24 ticks); tick is the alternative (96 per beat, 384 per bar). trim_start is the
+first frame and trim_end the trimmed LENGTH in frames, both at the sample's native rate (the device stores a length and
+resets a pad whose start + length exceeds the sample to the whole sample); trim_end=null means the whole sample from
+trim_start (looked up on the device). Shared-Slot Chopping: chop_sample(wav_path, group="C", shared_slot=True) uploads a
+loop once and sets trim_start/trim_end across all 12 pads of the group with choke=True and time_mode="reverse" on pad "enter".
 Melody on any sound (what KEYS mode does by hand): give an event "semitones" (offset from the sample's native pitch),
 "concert" (a note name such as "E3" the sound should actually sound at, resolved through the library's measured pitch of
 that sample; search_sounds shows each sound's pitch), or the raw "note" byte (the pad's root = native). Chords are the
