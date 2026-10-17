@@ -68,6 +68,44 @@ def _env_db(x: np.ndarray, sr: int, win_ms: float = 1.0) -> np.ndarray:
     return 20 * np.log10(np.sqrt(np.mean(frames * frames, axis=1)) + 1e-12)
 
 
+_PITCH_CLASSES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
+_FLAT_TO_SHARP = {"DB": "C#", "EB": "D#", "GB": "F#", "AB": "G#", "BB": "A#"}
+
+
+def parse_note_from_name(name: str | None) -> dict[str, Any] | None:
+    """Extract an explicit musical pitch class (and optional octave/MIDI note) from a sample name or filename.
+
+    Examples:
+    - `"Cymatics - Dubstep Bass E"` -> `{"pitch_class": "E", "octave": None, "midi_note": None}`
+    - `"808_F#1"` -> `{"pitch_class": "F#", "octave": 1, "midi_note": 30}`
+    - `"liquid chord em7"` -> `{"pitch_class": "E", "octave": None, "midi_note": None}`
+    """
+    if not name:
+        return None
+    stem = re.sub(r"\.(wav|pcm|aif|aiff|flac)$", "", str(name), flags=re.IGNORECASE).strip()
+    tokens = [t for t in re.split(r"[\s_\-]+", stem) if t]
+    for idx in range(len(tokens) - 1, -1, -1):
+        tok = tokens[idx]
+        # Avoid matching a standalone English article "a" in the middle of a phrase unless it's the final token
+        if tok.lower() == "a" and idx < len(tokens) - 1:
+            continue
+        m = re.fullmatch(r"([A-Ga-g])([#b]?)(?:m|min|maj|m7|maj7|7)?([0-6])?", tok)
+        if not m:
+            continue
+        letter = m.group(1).upper()
+        acc = m.group(2)
+        oct_str = m.group(3)
+        pc = letter + ("#" if acc == "#" else "")
+        if acc == "b":
+            pc = _FLAT_TO_SHARP.get(letter + "B", letter)
+        if pc not in _PITCH_CLASSES:
+            continue
+        octave = int(oct_str) if oct_str is not None else None
+        midi_note = (_PITCH_CLASSES.index(pc) + 12 * (octave + 1)) if octave is not None else None
+        return {"pitch_class": pc, "octave": octave, "midi_note": midi_note}
+    return None
+
+
 def _f0(seg: np.ndarray, sr: int, fmin: float = 30.0, fmax: float = 2500.0) -> tuple[float | None, float]:
     seg = seg.astype(np.float64)
     seg = seg - seg.mean()
@@ -101,7 +139,7 @@ def _f0(seg: np.ndarray, sr: int, fmin: float = 30.0, fmax: float = 2500.0) -> t
     return f0, max(0.0, min(1.0, conf))
 
 
-def features(x: np.ndarray, sr: int, channels: int = 1) -> dict[str, Any]:
+def features(x: np.ndarray, sr: int, channels: int = 1, name: str | None = None) -> dict[str, Any]:
     """Measured features of one sound (x = mono float32 in [-1, 1])."""
     x = np.asarray(x, dtype=np.float32)
     n = len(x)
@@ -139,7 +177,28 @@ def features(x: np.ndarray, sr: int, channels: int = 1) -> dict[str, Any]:
     # pitch on the 200 ms after the attack (skipping the first 20 ms transient)
     seg = x[onset + int(0.02 * sr): onset + int(0.22 * sr)]
     f0, conf = _f0(seg, sr)
-    midi = 69 + 12 * np.log2(f0 / 440) if (f0 and f0 > 0) else None
+    # Measure pitch drift between early (20-120 ms) and late (120-220 ms) windows to detect sweeping FX / 808 drops
+    seg_early = x[onset + int(0.02 * sr): onset + int(0.12 * sr)]
+    seg_late = x[onset + int(0.12 * sr): onset + int(0.22 * sr)]
+    f0_early, conf_early = _f0(seg_early, sr)
+    f0_late, conf_late = _f0(seg_late, sr)
+    pitch_drift_cents = None
+    if f0_early and f0_late and conf_early > 0.45 and conf_late > 0.45:
+        pitch_drift_cents = round(float(1200.0 * np.log2(f0_late / f0_early)), 1)
+    pitch_stable = True if pitch_drift_cents is None else (abs(pitch_drift_cents) <= 150.0)
+
+    midi = float(69 + 12 * np.log2(f0 / 440)) if (f0 and f0 > 0) else None
+    hint = parse_note_from_name(name)
+    # If the sample name explicitly states a note (e.g. "Dubstep Bass E") and autocorrelation locked onto the 3rd
+    # harmonic (+7 semitones / fifth above), disambiguate back to the fundamental pitch class.
+    if hint and midi is not None and conf > 0.45:
+        hint_pc_idx = _PITCH_CLASSES.index(hint["pitch_class"])
+        meas_pc_idx = int(round(midi)) % 12
+        diff = (meas_pc_idx - hint_pc_idx) % 12
+        if diff == 7:  # 3rd harmonic (12 + 7 = 19 semitones above fundamental)
+            midi = round(midi) - 7.0
+            f0 = float(440.0 * (2.0 ** ((midi - 69.0) / 12.0)))
+
     # spectral flatness (0 tonal .. 1 noisy), bandwidth and the share of energy in body (150-800) and presence (800-4000) bands
     body = x[onset: onset + int(0.4 * sr)] if n - onset > 64 else x
     spec = np.abs(np.fft.rfft(body * np.hanning(len(body)))) ** 2 + 1e-18
@@ -165,7 +224,10 @@ def features(x: np.ndarray, sr: int, channels: int = 1) -> dict[str, Any]:
         "low_share": None if low_all is None else round(low_all, 3), "high_share": None if high_all is None else round(high_all, 3),
         "f0_hz": None if f0 is None else round(f0, 1), "pitch_confidence": round(conf, 2),
         "midi_note": None if midi is None else round(float(midi), 1),
-        "pitch_class": None if midi is None else ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"][int(round(midi)) % 12],
+        "pitch_class": None if midi is None else _PITCH_CLASSES[int(round(midi)) % 12],
+        "pitch_drift_cents": pitch_drift_cents,
+        "pitch_stable": pitch_stable,
+        "name_pitch_hint": hint["pitch_class"] if hint else None,
         "stereo": channels > 1,
     }
 
@@ -342,7 +404,8 @@ class Library:
                 metadata: dict[str, Any] | None = None, user_tags: list[str] | None = None) -> dict[str, Any]:
         arr = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
         mono = arr.reshape(-1, channels).mean(axis=1) if channels > 1 else arr
-        feats = features(mono, samplerate, channels)
+        hint_name = name or os.path.basename(str((source or {}).get("original") or (source or {}).get("path") or ""))
+        feats = features(mono, samplerate, channels, name=hint_name)
         if channels == 2:
             lr = arr.reshape(-1, 2)
             side = float(np.sqrt(np.mean((lr[:, 0] - lr[:, 1]) ** 2)) + 1e-9)

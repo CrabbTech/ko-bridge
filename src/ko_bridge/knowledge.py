@@ -16,8 +16,18 @@ QUICKSTART = """ko-bridge quickstart: a beat on the EP-133 in five moves.
 5. play_pattern(bpm, bars): MIDI START + clock from the Mac, recording the USB audio and the device's own note output;
    the result grades onsets against the grid (expected within ~4 ms, jitter well under 1 ms). play_notes plays pads
    live (3.5 ms latency). render_song(project) records a whole song position by position and stitches it, with nobody at
-   the device. Listen with get_take / the WAV path. Never ask the human to arm or time a recording: the bridge drives
-   playback; the one setting it needs is MIDI clock on receive (101), set once.
+    the device. Listen with get_take / the WAV path, and run critique_take(take_id) for 4-band spectral balance + Gemini
+    3.1 Pro multimodal audio critique. Never ask the human to arm or time a recording: the bridge drives playback; the
+    one setting it needs is MIDI clock on receive (101), set once.
+
+Musical & Chopping Rules (DO NOT synthesize raw math sine/saw WAVs or treat the K.O. II as a static ROMpler):
+- Use chop_sample(wav_path, group="C", shared_slot=True) or generate_lyria_chop_group(prompt, bpm, bars) to slice a real
+  breakbeat or musical stem across 12 pads (pads 1..8 = structural beat-grid chops, 9/0/. = transient accents, enter =
+  reversed REV pickup chop) referencing ONE shared sample slot via trim_start/trim_end and choke=True.
+- External MIDI clock runs at 24 PPQN (1 MIDI clock pulse = 4 internal 96-PPQN ticks). Always snap sub-step offsets to
+  multiples of 4 ticks (ko_bridge.groove.snap_tick_to_clock) so the clock follower never interpolates mid-pulse.
+- Group faders slew over ~100 ms: pre-lead step jumps by 0.5 steps (12 ticks) using groove.compensate_fader_slew and
+  never write 1/16th LFO spam on group faders (use live MIDI CC 12/13 or pitchwheel for fast modulation).
 
 Rules the bridge enforces: every write is checkpointed (restore_checkpoint undoes it); sound slots are never
 overwritten or deleted without the acknowledgement string; factory slots 1-599 are protected; system settings are
@@ -54,17 +64,19 @@ never run two FILE sessions at once; an unsolicited debug SysEx frame means stop
 PROJECT_FORMAT = """write_project spec (JSON):
 {
  "bpm": 120,                                   // optional; patches the settings member (a device-written template is used if the slot has none)
- "pads": [ {"group": "C", "pad": ".", "slot": 600, "trim_end": null, "release": 255, "play_mode": "oneshot",
-            "root_note": null, "amplitude": 100, "pitch": 0, "pan": 0, "attack": 0, "time_mode": "off", "choke": false} ],
+ "pads": [ {"group": "C", "pad": ".", "slot": 600, "trim_start": 0, "trim_end": null, "release": 255, "play_mode": "oneshot",
+            "root_note": null, "amplitude": 100, "pitch": 0, "pan": 0, "attack": 0, "time_mode": "off", "choke": true} ],
  "patterns": [ {"group": "C", "number": 1, "bars": 4,
                 "events": [ {"pad": ".", "step": 0, "velocity": 120}, {"pad": "0", "step": 8, "velocity": 100, "note": 63} ],
-                "lanes": [ {"parameter": "lowpass", "points": [ {"step": 0, "value": 1.0}, {"step": 16, "value": 0.4} ]} ]} ],
+                "lanes": [ {"parameter": "lowpass", "points": [ {"step": 0, "value": 1.0}, {"step": 15.5, "value": 0.4} ]} ]} ],
  "scene": {"patterns": {"C": 1}, "time_signature": [4, 4]},   // optional; defaults to the written patterns, other groups keep scene 1
  "fader_bases": [ {"group": "C", "parameter": "fx", "value": 0.3} ],
  "fx": {"type": "reverb", "x": 0.4, "y": 0.5, "output_compressor_drive": 0.2}
 }
-step = 16th notes from the pattern start (24 ticks); tick is the alternative (96 per beat, 384 per bar). trim_end is in
-frames at the sample's native rate; null means the whole sample (looked up on the device).
+step = 16th notes from the pattern start (24 ticks); tick is the alternative (96 per beat, 384 per bar). trim_start and
+trim_end are frame indices at the sample's native rate; trim_end=null means the end of the sample (looked up on the device).
+Shared-Slot Chopping: chop_sample(wav_path, group="C", shared_slot=True) uploads a loop once and sets trim_start/trim_end
+across all 12 pads of the group with choke=True and time_mode="reverse" on pad "enter".
 Melody on any sound (what KEYS mode does by hand): give an event "semitones" (offset from the sample's native pitch),
 "concert" (a note name such as "E3" the sound should actually sound at, resolved through the library's measured pitch of
 that sample; search_sounds shows each sound's pitch), or the raw "note" byte (the pad's root = native). Chords are the
