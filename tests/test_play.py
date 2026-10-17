@@ -5,24 +5,39 @@ import pytest
 
 from ko_bridge import server as srv
 from ko_bridge.ep133 import EP133
+from ko_bridge.project import Lane, LanePoint, NoteEvent, PadSpec, PatternSpec, ProjectSpec, SceneSpec
 
 from .conftest import needs_device
 
 pytestmark = needs_device
 
+# The spike's test pattern: the two test tones on C "." and "0", ten hits over four bars, a low-pass lane closing for bar 2.
+TEST_TONES = {".": 600, "0": 601}
+HITS = [(0, ".", 120), (192, "0", 100), (384, ".", 120), (576, "0", 100), (768, ".", 120), (864, ".", 90), (960, "0", 100),
+        (1152, ".", 120), (1344, "0", 100), (1440, "0", 80)]
+
 
 @pytest.fixture(scope="module")
 def playing(scratch):
-    """The scratch slot active with the spike's pattern project (pads C "." and "0" assigned); restored afterwards."""
+    """The scratch slot loaded with the spike's two-pad test pattern, whatever it held before (restored from the write's
+    checkpoint afterwards): the tests must not depend on what the last song left in the slot."""
     ep = EP133(lock_owner="ko-bridge tests")
     active_before = ep.active_project().get("project")
-    _p, data, _s = ep.checkpoint(scratch, "before-play-tests")
-    desc = srv.describe_project(scratch)
-    if "C:." not in desc["pads"]:
-        pytest.skip("scratch project has no sample on pad C '.'; run scripts/upload_sounds.py first")
-    srv.select_project(scratch)
+    occupied = {int(n["id"]) for n in ep.list_sounds()}
+    if not set(TEST_TONES.values()) <= occupied:
+        pytest.skip("the test tones are missing from slots 600/601; run scripts/upload_sounds.py first")
+    spec = ProjectSpec(
+        bpm=120,
+        pads=[PadSpec(group="C", pad=p, slot=s) for p, s in TEST_TONES.items()],
+        patterns=[PatternSpec(group="C", number=1, bars=4, events=[NoteEvent(pad=p, tick=t, velocity=v) for t, p, v in HITS],
+                              lanes=[Lane(parameter="lowpass", points=[LanePoint(tick=0, value=1.0), LanePoint(tick=384, value=0.43),
+                                                                         LanePoint(tick=768, value=1.0)])]),
+                  PatternSpec(group="A", number=1, bars=1), PatternSpec(group="B", number=1, bars=1), PatternSpec(group="D", number=1, bars=1)],
+        scene=SceneSpec(patterns={"A": 1, "B": 1, "C": 1, "D": 1}))
+    srv.write_project(scratch, spec, reload=True, wait=True)
     time.sleep(srv.SETTLE_SECONDS)
     yield scratch
+    srv.restore_checkpoint(scratch)
     if active_before and active_before != scratch:
         ep.select_project(active_before)
 
