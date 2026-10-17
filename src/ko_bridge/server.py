@@ -538,11 +538,11 @@ class LiveNote(BaseModel):
 
 @mcp.tool(annotations=RW)
 def play_pattern(bpm: Bpm | None = None, bars: Bars = 4, record: bool = True, project: Project | None = None, name: str | None = None,
-                 wait: bool | None = None) -> dict[str, Any]:
-    """Play the active project's current scene from the Mac: MIDI START then clock at `bpm` (default the bridge's default BPM) for `bars` bars, then STOP. Records the USB audio to a take and the device's MIDI note output, and grades onsets against the grid. The device must be set to receive MIDI clock (human_steps("midi_clock_in")). `project` selects a slot first."""
+                 scene: int | None = None, wait: bool | None = None) -> dict[str, Any]:
+    """Play a scene of the active project from the Mac: MIDI START then clock at `bpm` (default the bridge's default BPM) for `bars` bars, then STOP. Records the USB audio to a take and the device's MIDI note output, and grades onsets against the grid. The device must be set to receive MIDI clock (human_steps("midi_clock_in")). `project` selects a slot first; `scene` plays that scene (it is written into scene 1 for the play and the scene list is restored afterwards, two checkpointed writes), otherwise whatever is in scene 1 plays."""
     cfg = _cfg()
     tempo = float(bpm or cfg.default_bpm)
-    expected = bars * 240.0 / tempo + 6.0 + (4.0 + SETTLE_SECONDS if project else 0.0)
+    expected = bars * 240.0 / tempo + 6.0 + (4.0 + SETTLE_SECONDS if project else 0.0) + (40.0 if scene else 0.0)
 
     def work(job: Job | None) -> dict[str, Any]:
         with _device() as (ep, cfg2):
@@ -552,9 +552,21 @@ def play_pattern(bpm: Bpm | None = None, bars: Bars = 4, record: bool = True, pr
                 _stage(job, "settling after the project switch")
                 time.sleep(SETTLE_SECONDS)
             active = ep.active_project()
+            original = None
+            if scene is not None and active.get("project"):
+                original, _m, _s = ep.read_project(active["project"])
+                _stage(job, f"putting scene {scene} in front")
+                _scene_front_write(ep, active["project"], scene, f"front-{scene}")
             desc = ep.describe_project(active["project"]) if active.get("project") else {}
+            if scene is not None:
+                desc = {**desc, "scene_cursor": scene}
             out, res, expected_events = _clocked_play(ep, cfg2, desc, tempo, bars, record, job)
+            if original is not None:
+                _stage(job, "restoring the original scenes")
+                _scenes_restore_write(ep, active["project"], original, "scenes-restore")
         out["project"] = active.get("project")
+        if scene is not None:
+            out["scene"] = scene
         if "recording" in res:
             rec = res["recording"]
             grade = player.grade(rec, res["start_sample"], [e["time_s"] for e in expected_events]) if expected_events else {}
@@ -589,6 +601,33 @@ class ClockNotReceived(RuntimeError):
     pass
 
 
+def _scene_front_write(ep: EP133, project: int, scene_no: int, label: str) -> dict[str, Any]:
+    """Make scene `scene_no` what the Mac's START plays: copy its chunk into scene 1 and put the cursor on 1.
+
+    Measured 2026-10-16: with the device on its normal screen, external START played scene 1 regardless of the trailer
+    cursor byte (earlier the same day the cursor did select the scene), so both are set. Other scenes and the song order
+    are untouched; the caller restores the original scenes afterwards."""
+    base, _m, _s = ep.read_project(project)
+    scenes, song = PJ.scenes_from_base(base)
+    if not scenes or scene_no > len(scenes):
+        raise RuntimeError(f"project {project} has no scene {scene_no} (it has {len(scenes)})")
+    fronted = [scenes[scene_no - 1]] + scenes[1:]
+    tar, _doc = PJ.compile_spec(ProjectSpec(scenes=fronted, song=song, current_scene=1), base, {})
+    w = ep.write_project(project, tar, label, reload=True, base=base)
+    if not w.get("identical"):
+        raise RuntimeError(f"scene write for {label} read back differently; checkpoint {w['checkpoint']}")
+    return w
+
+
+def _scenes_restore_write(ep: EP133, project: int, original: bytes, label: str) -> dict[str, Any]:
+    """Put the original scenes member back (scene list, song order, cursor) over the slot's current archive."""
+    base, _m, _s = ep.read_project(project)
+    scenes, song = PJ.scenes_from_base(original)
+    cursor = PJ.describe(original).get("scene_cursor") or 1
+    tar, _doc = PJ.compile_spec(ProjectSpec(scenes=scenes, song=song, current_scene=cursor), base, {})
+    return ep.write_project(project, tar, label, reload=True, base=base)
+
+
 @mcp.tool(annotations=RW)
 def render_song(project: Project, positions: list[int] | None = None, bpm: Bpm | None = None, name: str | None = None, wait: bool | None = None) -> dict[str, Any]:
     """Record a project's whole song from the Mac with nobody at the device: for each song position the scene cursor is
@@ -607,11 +646,12 @@ def render_song(project: Project, positions: list[int] | None = None, bpm: Bpm |
             if not scenes:
                 raise RuntimeError(f"project {project} has no scenes to render")
             original_cursor = int(desc.get("scene_cursor") or 1)
+            original_archive, _m0, _s0 = ep.read_project(project)
             active = ep.active_project().get("project")
             if active != project:
                 _stage(job, f"selecting project {project}")
                 ep.select_project(project)
-            cursor = original_cursor
+            cursor = None                       # which scene currently sits in front (scene 1 slot); None = untouched original
             pieces, takes = [], []
             sr = 48000
             bar_s = 240.0 / tempo
@@ -623,12 +663,8 @@ def render_song(project: Project, positions: list[int] | None = None, bpm: Bpm |
                     raise RuntimeError(f"song position {index + 1} names scene {scene_no}, which is not defined")
                 bars = max([desc["patterns"][f"{g}{n:02d}"]["bars"] for g, n in scene["patterns"].items() if n and f"{g}{n:02d}" in desc["patterns"]] or [1])
                 if cursor != scene_no:
-                    _stage(job, f"position {index + 1}/{len(song)}: cursor to scene {scene_no}")
-                    base, _m, _s = ep.read_project(project)
-                    tar, _doc = PJ.compile_spec(ProjectSpec(current_scene=scene_no), base, {})
-                    w = ep.write_project(project, tar, f"cursor-{scene_no}", reload=True, base=base)
-                    if not w.get("identical"):
-                        raise RuntimeError(f"cursor write for scene {scene_no} read back differently; checkpoint {w['checkpoint']}")
+                    _stage(job, f"position {index + 1}/{len(song)}: putting scene {scene_no} in front")
+                    _scene_front_write(ep, project, scene_no, f"front-{scene_no}")
                     cursor = scene_no
                 _stage(job, f"position {index + 1}/{len(song)}: scene {scene_no}, {bars} bars")
                 out, res, expected = _clocked_play(ep, cfg, {**desc, "scene_cursor": scene_no}, tempo, bars, True, job)
@@ -646,11 +682,9 @@ def render_song(project: Project, positions: list[int] | None = None, bpm: Bpm |
                                                                                       "midi_note_ons": res["midi_note_ons"]})
                 takes.append({"position": index + 1, "scene": scene_no, "bars": bars, "midi_note_ons": out["midi_note_ons"], "expected_events": out["expected_events"],
                               "take_id": take["take_id"], "warning": out.get("warning")})
-            if cursor != original_cursor:
-                _stage(job, f"cursor back to scene {original_cursor}")
-                base, _m, _s = ep.read_project(project)
-                tar, _doc = PJ.compile_spec(ProjectSpec(current_scene=original_cursor), base, {})
-                ep.write_project(project, tar, f"cursor-{original_cursor}", reload=True, base=base)
+            if cursor is not None:
+                _stage(job, "restoring the original scenes")
+                _scenes_restore_write(ep, project, original_archive, "scenes-restore")
         if not pieces:
             return {"positions": takes, "note": "nothing rendered"}
         audio = np.concatenate(pieces, axis=0)

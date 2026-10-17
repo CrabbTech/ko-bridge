@@ -28,6 +28,9 @@ dev = [
     "anyio>=4.15",
     "pytest>=8",
 ]
+synth = [
+    "pedalboard>=0.9.26",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

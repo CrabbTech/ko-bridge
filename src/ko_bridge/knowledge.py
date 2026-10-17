@@ -72,8 +72,10 @@ same idea on a chord sample: "liquid chord em7" at semitones -5 is Bm7. Use play
 note lengths should matter.
 Arrangements: "scenes": [ {"patterns": {"A": 1, "B": 1}}, {"patterns": {"A": 2}} ] writes scenes 1..N (groups left out keep
 their current reference, missing patterns become empty members), "song": [1, 2, 1] is the order the device's own song
-mode plays (hold MAIN + ENTER for the song list editor, SHIFT+PLAY plays from the start), "current_scene" is the scene the
-Mac's START plays. Unmentioned pads, patterns and members survive."""
+mode plays (hold MAIN + ENTER for the song list editor, SHIFT+PLAY plays from the start), "current_scene" is the cursor byte. The Mac's
+START plays scene 1 on this unit (the cursor byte selected the scene earlier the same day, so the device's own screen
+state decides); render_song and play_pattern(scene=n) therefore copy the wanted scene into scene 1 for the play and
+restore the list afterwards. Unmentioned pads, patterns and members survive."""
 
 HUMAN_STEPS = {
     "system_settings": "System settings: press SHIFT+ERASE. Navigate with - and + and ENTER, or type a setting's code on the pads (e.g. 1 0 1); the display shows the new value briefly. SHIFT+ENTER goes back a page; MAIN returns to the normal screen.",

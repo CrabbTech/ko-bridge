@@ -237,3 +237,31 @@ Human steps added: one power cycle (hold the power switch off, wait, power on) a
 - Human steps today: one setting change (MIDI clock to receive, SHIFT+ERASE, 1 0 1, MAIN), done once. The two earlier
   requests to time a SHIFT+PLAY were a mistake and will not recur; `scripts/record_song.py` remains for recording the
   device's own song mode when Tyler wants to use it himself.
+
+## Addendum: synthesized sound set, drum and bass render, and three more device facts (same day, night)
+
+- **Original sounds instead of factory ones.** `scripts/synth.py` renders a 34-sound set at the device's 46,875 Hz in under two
+  seconds: drums (sine-sweep kicks with click transients, snare body plus band-passed rattle, a four-burst clap, 808-style
+  metallic hats and ride, shaker, rim, tom, FM zap), basses with the wobble baked in (detuned band-limited saws through a
+  resonant 24 dB low-pass swept by an LFO whose period is a 16th-note multiple of the song tempo, one bar long, plus FM
+  growls), a sub, an FM electric piano, an FM bell, a Karplus-Strong pluck, a detuned-saw pad and a formant "vowel" pad
+  (stereo via per-channel chorus), a two-bar riser, an impact and a crackle texture; pedalboard supplies chorus, reverb,
+  compression. `scripts/upload_set.py` uploaded them byte-verified into slots 602-635 in 7 minutes and tagged them in
+  the library. Baked wobble measured on a 5 ms grid: 20-30 dB of filter modulation at every rate (the device's fader
+  slew made eighth-note wobbles 5-12 dB and triplets inaudible), and 23 dB survives in the full mix.
+- **Which scene the Mac's START plays is device-state dependent.** Four controlled probes on the same project: swapping
+  scenes 1 and 2 swapped what played; cursor 2 and cursor 3 (cursor-only and full writes, verified) still played scene 1.
+  Earlier the same day the cursor byte did select the scene (dubstep render, jungle breakdown test), so the device's own
+  screen state decides. `render_song` and `play_pattern(scene=n)` now copy the wanted scene into slot 1 for the play and
+  restore the scene list afterwards, which works under both behaviours (checked: restore is byte-identical).
+- **Notes vanish silently under voice pressure.** A breakdown with three stereo pad voices plus two stereo choir voices
+  held a bar each with long releases, a 5.5 s crackle loop, ride, arpeggio, sub and electric piano lost 12-19 of 172
+  note-ons per render, including a lone piano note at a quiet moment; staggering same-tick events by 1-6 ticks recovered
+  7, thinning to two-note voicings, one choir voice, shorter releases and no crackle recovered the rest (162/162). The
+  device emits no MIDI for a trigger it refuses, so MIDI counts are the oracle.
+- **The output compressor's drive adds gain.** With drive 0.45 the drops sat at 0 dBFS with clipped samples whatever the
+  pad levels; drive 0.22 plus pad levels about 6 dB lower gave -1.4 dBFS peaks and no clipping. Clipping shows in the USB
+  capture as samples at full scale.
+- `scripts/dnb.py` (six 8-bar scenes, 174 BPM, E minor; group level lanes carry the dynamics: intro 0.75 rising, drop
+  0.8, breakdown with a one-beat silence) rendered hands-free four times while the mix was tuned; v4 matched every
+  expected note-on (95, 236, 267, 162, 272, 117) with a 24 dB dynamic range between intro and drop.
