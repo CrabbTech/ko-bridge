@@ -15,8 +15,8 @@ def lib():
     lib = L.Library()
     if not lib.records:
         lib.rebuild_from_backup()
-    from .conftest import device_present
-    if device_present() and lib.get(600) is None:
+    from .conftest import device_allowed
+    if device_allowed() and lib.get(600) is None:
         srv.sync_library(wait=True)
         lib = L.Library()
     return lib
@@ -58,9 +58,9 @@ def test_import_then_load_and_delete(tmp_path):
     assert rows and rows[0]["slot"] is None and "test" in rows[0]["tags"]
     rid = rows[0]["id"]
     assert srv.search_sounds(labels=["test"], on_device=False)[0]["id"] == rid
-    from .conftest import device_present
-    if not device_present():
-        pytest.skip("EP-133 not connected: load/delete not exercised")
+    from .conftest import device_allowed
+    if not device_allowed():
+        pytest.skip("device not allowed for this run (KO_BRIDGE_DEVICE_TESTS=1 and a connected EP-133): load/delete not exercised")
     r = srv.load_sound(rid, wait=True)
     assert r["identical"] and r["slot"] >= 602
     assert srv.describe_library_sound(str(r["slot"]))["category"] in ("hat_closed", "snare", "perc", "hat_open")

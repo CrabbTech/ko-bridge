@@ -41,14 +41,19 @@ overriding what is already set; `~/Music/op-bridge/secrets.env` is read when ko-
 
 ## Tests
 
-Functional tests only, on the real device; they skip when no EP-133 is connected. Writes go to the scratch slot
-(`KO_BRIDGE_SCRATCH_PROJECT`, default 9) and to free sound slots from 600 up, and the scratch slot is restored from its
-checkpoint afterwards. The playback tests need MIDI clock set to receive on the device. `tests/test_chop.py` reads a
-factory sample from the device, chops it into the scratch project from one shared slot and checks the trims on the
-readback, the reversed pad and the choke cut in a recording, and the clocked chops' timing on high-band onsets.
+Functional tests on the real device, plus surface tests that never touch it (the MCP tool list and annotations, path
+confinement, name validation, the secrets loader, the producer layer's parsing and error paths). The device tests run
+only with `KO_BRIDGE_DEVICE_TESTS=1` and the EP-133 connected, because several bridge processes share the hardware;
+otherwise they skip. No test may spend money: without `KO_BRIDGE_PAID_TESTS=1` the Gemini key is removed from the test
+process (no test needs it today). Writes go to the scratch slot (`KO_BRIDGE_SCRATCH_PROJECT`, default 9) and to free
+sound slots from 600 up, and the scratch slot is restored from its checkpoint afterwards. The playback tests need MIDI
+clock set to receive on the device. `tests/test_chop.py` reads a factory sample from the device, chops it into the
+scratch project from one shared slot and checks the trims on the readback, the reversed pad and the choke cut in a
+recording, and the clocked chops' timing on high-band onsets.
 
 ```bash
-uv run pytest
+uv run pytest                              # surface tests; device tests skip
+KO_BRIDGE_DEVICE_TESTS=1 uv run pytest     # with the EP-133 connected and nobody else driving it
 ```
 
 ## Spike (2026-10-16)
