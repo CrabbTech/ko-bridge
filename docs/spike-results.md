@@ -265,3 +265,24 @@ Human steps added: one power cycle (hold the power switch off, wait, power on) a
 - `scripts/dnb.py` (six 8-bar scenes, 174 BPM, E minor; group level lanes carry the dynamics: intro 0.75 rising, drop
   0.8, breakdown with a one-beat silence) rendered hands-free four times while the mix was tuned; v4 matched every
   expected note-on (95, 236, 267, 162, 272, 117) with a 24 dB dynamic range between intro and drop.
+
+## Addendum: reading the library, and riddim from library sounds only (same day, late)
+
+- Tyler's verdict on the synthesized drum-and-bass track: strange timing, hollow small drums, stiff synth; the factory-only
+  jungle remains his favourite; no more synthesis. Likely causes, now avoided: synthesized drums, equal velocities and static
+  timbres, and 1-6 tick staggers that fall between the Mac's 24 PPQN clock pulses (a tick is 1/4 of a clock; the device
+  must interpolate anything off a clock multiple). Rule: every event on a multiple of 4 ticks; swing is +8 ticks, triplets
+  16 or 32 ticks; movement comes from velocity, the mute group, pitch and filter lanes.
+- **The library now reads its own character.** Each sound has spectral flatness, bandwidth, body and presence shares,
+  crest factor, decay shape and stereo width, a one-line character description ("short, unpitched, noisy, very bright,
+  clicky attack, decays fast") and an automatic name for the 238 placeholder-named slots (Pocket Operator imports, per
+  Tyler). The 243 user slots cluster into eight groups: 17 hats and cymbals, 28 kicks and low tones, 20 C-pitched bass
+  tones, 63 short pitched hits around C and F, 45 snares and percussion, 22 long C2 sustains, 12 bright pitched shorts,
+  36 long textures; tagged po-group-N; `docs/library-catalog.md` lists all 655 sounds.
+- **Riddim from library sounds only** (`scripts/riddim.py`): factory kick, snare, clap and cowbell layered with PO hats
+  (28 and 89 ms), a PO kick click, a PO snare and tick ghosts; basses from "wlobb wobb", "growly", "tb3x3 punch", "mud",
+  "phonec grr", "tock", "uggbass", "rude twang", a native-F1 PO bass tone and the boop; sub from "thirty seven sub".
+  Gating: every bass pad in the mute group, so each hit cuts the last. Drops and sub drops: the group pitch lane
+  (0.5 is neutral, 0.0 an octave down). Risers: pitch and high-pass lanes on held strings. Six scenes rendered hands-free
+  with every note-on matched (72, 190, 217, 233, 82, 231), no clipping, 8 dB between break and drop, a written silent
+  beat before the last drop. The ten synthesized riddim basses uploaded earlier sit unused in slots 636-645.
