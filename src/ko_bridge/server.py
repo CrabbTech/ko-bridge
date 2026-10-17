@@ -675,7 +675,8 @@ def render_song(project: Project, positions: list[int] | None = None, bpm: Bpm |
                 sr = rec.samplerate
                 start = res["start_sample"]
                 length = int(round(bars * bar_s * sr))
-                pieces.append(rec.audio[start: start + length])
+                tail_n = int(0.8 * sr)
+                pieces.append((rec.audio[start: start + length], rec.audio[start + length: start + length + tail_n]))
                 grade = player.grade(rec, start, [e["time_s"] for e in expected]) if expected else {}
                 take = _save_take(_take_id(f"{name or 'song'}-pos{index + 1}"), rec, {"kind": "pattern", "bpm": tempo, "bars": bars, "scene": scene_no,
                                                                                       "start_sample": start, "expected": expected, "grade": grade,
@@ -687,7 +688,15 @@ def render_song(project: Project, positions: list[int] | None = None, bpm: Bpm |
                 _scenes_restore_write(ep, project, original_archive, "scenes-restore")
         if not pieces:
             return {"positions": takes, "note": "nothing rendered"}
-        audio = np.concatenate(pieces, axis=0)
+        audio = np.concatenate([body for body, _tail in pieces], axis=0)
+        offset = 0
+        for body, tail in pieces[:-1]:                       # releases and reverbs of a position ring into the next one
+            offset += len(body)
+            n = min(len(tail), len(audio) - offset)
+            if n > 0:
+                fade = np.linspace(1.0, 0.0, n)[:, None]
+                audio[offset: offset + n] += tail[:n] * fade
+        audio = np.clip(audio, -1.0, 1.0)
         from .audio import Recording
         stitched = Recording(audio=audio, samplerate=sr)
         take = _save_take(_take_id(name or "song"), stitched, {"kind": "song", "project": project, "bpm": tempo, "song": song[: len(pieces)], "start_sample": 0,

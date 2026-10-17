@@ -140,7 +140,25 @@ def features(x: np.ndarray, sr: int, channels: int = 1) -> dict[str, Any]:
     seg = x[onset + int(0.02 * sr): onset + int(0.22 * sr)]
     f0, conf = _f0(seg, sr)
     midi = 69 + 12 * np.log2(f0 / 440) if (f0 and f0 > 0) else None
+    # spectral flatness (0 tonal .. 1 noisy), bandwidth and the share of energy in body (150-800) and presence (800-4000) bands
+    body = x[onset: onset + int(0.4 * sr)] if n - onset > 64 else x
+    spec = np.abs(np.fft.rfft(body * np.hanning(len(body)))) ** 2 + 1e-18
+    freqs = np.fft.rfftfreq(len(body), 1 / sr)
+    band = (freqs > 60) & (freqs < 16000)
+    flatness = float(np.exp(np.mean(np.log(spec[band]))) / np.mean(spec[band]))
+    total = float(spec.sum())
+    cen_b = float((freqs * spec).sum() / total)
+    bandwidth = float(np.sqrt(((freqs - cen_b) ** 2 * spec).sum() / total))
+    mid_share = float(spec[(freqs >= 150) & (freqs < 800)].sum() / total)
+    presence_share = float(spec[(freqs >= 800) & (freqs < 4000)].sum() / total)
+    head = x[onset: onset + int(0.02 * sr)]
+    crest = float(np.max(np.abs(head)) / (np.sqrt(np.mean(head.astype(np.float64) ** 2)) + 1e-9)) if len(head) else 0.0
+    # decay shape: how much level is left a third and two thirds of the way through
+    third = max(1, len(env) // 3)
+    late_db = float(np.mean(env[2 * third:])) - peak_db if len(env) > 3 else -60.0
     return {
+        "flatness": round(flatness, 3), "bandwidth_hz": round(bandwidth), "mid_share": round(mid_share, 3), "presence_share": round(presence_share, 3),
+        "crest": round(crest, 1), "late_level_db": round(late_db, 1),
         "seconds": round(seconds, 3), "peak_dbfs": round(20 * np.log10(peak + 1e-12), 1), "rms_dbfs": round(float(20 * np.log10(np.sqrt(np.mean(x.astype(np.float64) ** 2)) + 1e-12)), 1),
         "attack_ms": round(attack_ms, 1), "decay_ms": None if decay_ms is None else round(decay_ms, 0), "sustain_db": round(sustain_db, 1),
         "centroid_hz": None if cen_head is None else round(cen_head), "centroid_hz_overall": None if cen_all is None else round(cen_all),
@@ -246,6 +264,51 @@ def descriptors(f: dict[str, Any]) -> list[str]:
     return out
 
 
+def character(record: dict[str, Any]) -> str:
+    """One readable line about what a sound is like, from its measurements."""
+    f = record.get("features", {})
+    sec = f.get("seconds", 0)
+    words = []
+    words.append("very short" if sec < 0.08 else "short" if sec < 0.25 else "medium" if sec < 1.0 else "long" if sec < 3 else "very long")
+    conf = f.get("pitch_confidence", 0)
+    if conf > 0.75 and f.get("pitch_class"):
+        words.append(f"clearly pitched at {f['pitch_class']}{'' if f.get('midi_note') is None else int(round(f['midi_note'])) // 12 - 1}")
+    elif conf > 0.5 and f.get("pitch_class"):
+        words.append(f"loosely pitched around {f['pitch_class']}")
+    else:
+        words.append("unpitched")
+    flat = f.get("flatness") or 0
+    words.append("noisy" if flat > 0.3 else "textured" if flat > 0.08 else "tonal")
+    cen = f.get("centroid_hz") or 0
+    words.append("very bright" if cen > 6000 else "bright" if cen > 2500 else "mid" if cen > 800 else "dark" if cen > 200 else "sub-heavy")
+    att = f.get("attack_ms", 0)
+    words.append("clicky attack" if (f.get("crest") or 0) > 6 and att < 5 else "hard attack" if att < 10 else "soft attack" if att > 60 else "medium attack")
+    late = f.get("late_level_db", -60)
+    words.append("sustains" if late > -12 else "rings" if late > -30 else "decays fast")
+    if f.get("stereo"):
+        words.append("stereo" + (" wide" if (f.get("stereo_width") or 0) > 0.5 else ""))
+    return ", ".join(words)
+
+
+def auto_name(record: dict[str, Any]) -> str:
+    """A descriptive stand-in for placeholder names like '845 sample_01'."""
+    f = record.get("features", {})
+    cat = record.get("category", "sound")
+    pitch = f.get("pitch_class") if f.get("pitch_confidence", 0) > 0.5 else None
+    ms = int(round((f.get("seconds") or 0) * 1000))
+    bits = [cat]
+    if pitch:
+        bits.append(pitch + ("" if f.get("midi_note") is None else str(int(round(f["midi_note"])) // 12 - 1)))
+    cen = f.get("centroid_hz") or 0
+    bits.append("bright" if cen > 3000 else "dark" if cen < 400 else "mid")
+    bits.append(f"{ms}ms" if ms < 1000 else f"{ms / 1000:.1f}s")
+    return " ".join(bits)
+
+
+def is_placeholder(name: str | None) -> bool:
+    return not name or bool(re.fullmatch(r"\s*\d*\s*sample_\d+\s*|\s*\d+\.pcm\s*|\s*\d+[-_]\d+_\d+\s*", name))
+
+
 def label(record: dict[str, Any]) -> None:
     f = record.get("features", {})
     name_cat = category_from_name(record.get("name"))
@@ -256,6 +319,10 @@ def label(record: dict[str, Any]) -> None:
     record["labels"] = [record["category"]] + descriptors(f)
     if record.get("bank") and record["bank"] != "user":
         record["labels"].append(f"bank:{record['bank']}")
+    record["character"] = character(record)
+    if is_placeholder(record.get("name")):
+        record["auto_name"] = auto_name(record)
+        record["labels"].append("placeholder-name")
 
 
 # ----------------------------------------------------------------------------- the index
@@ -275,8 +342,14 @@ class Library:
                 metadata: dict[str, Any] | None = None, user_tags: list[str] | None = None) -> dict[str, Any]:
         arr = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
         mono = arr.reshape(-1, channels).mean(axis=1) if channels > 1 else arr
+        feats = features(mono, samplerate, channels)
+        if channels == 2:
+            lr = arr.reshape(-1, 2)
+            side = float(np.sqrt(np.mean((lr[:, 0] - lr[:, 1]) ** 2)) + 1e-9)
+            midv = float(np.sqrt(np.mean((lr[:, 0] + lr[:, 1]) ** 2)) + 1e-9)
+            feats["stereo_width"] = round(side / midv, 3)
         rec: dict[str, Any] = {"id": rid, "name": name, "slot": slot, "bank": bank_of(slot), "samplerate": samplerate, "channels": channels,
-                               "frames": len(mono), "source": source, "features": features(mono, samplerate, channels),
+                               "frames": len(mono), "source": source, "features": feats,
                                "user_tags": list(user_tags or self.records.get(rid, {}).get("user_tags", []))}
         if metadata:
             rec["device"] = {k: metadata.get(k) for k in ("sound.rootnote", "sound.playmode", "sound.bpm", "time.mode", "sound.amplitude", "sample.start", "sample.end") if k in metadata}
@@ -442,7 +515,7 @@ class Library:
             if pitch_class and f.get("pitch_class") != pitch_class:
                 continue
             score = 0.0
-            text = f"{rec.get('name') or ''} {' '.join(labs)}".lower()
+            text = f"{rec.get('name') or ''} {rec.get('auto_name') or ''} {rec.get('character') or ''} {' '.join(labs)}".lower()
             for w in words:
                 if w in text:
                     score += 2.0 if w in (rec.get("name") or "").lower() else 1.0
@@ -455,7 +528,8 @@ class Library:
     @staticmethod
     def row(rec: dict[str, Any]) -> dict[str, Any]:
         f = rec.get("features", {})
-        return {"id": rec["id"], "slot": rec.get("slot"), "name": rec.get("name"), "category": rec.get("category"), "label_source": rec.get("label_source"),
+        return {"id": rec["id"], "slot": rec.get("slot"), "name": rec.get("name"), "auto_name": rec.get("auto_name"), "character": rec.get("character"),
+                "category": rec.get("category"), "label_source": rec.get("label_source"),
                 "labels": [l for l in rec.get("labels", []) if l != rec.get("category")], "tags": rec.get("user_tags", []),
                 "seconds": f.get("seconds"), "stereo": f.get("stereo"), "samplerate": rec.get("samplerate"),
                 "pitch": (f"{f.get('pitch_class')}{'' if f.get('midi_note') is None else int(round(f['midi_note'])) // 12 - 1} ({f.get('f0_hz')} Hz)" if f.get("pitch_confidence", 0) > 0.5 else None),

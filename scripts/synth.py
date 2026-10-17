@@ -478,3 +478,124 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+# ----------------------------------------------------------------------------- riddim basses (loops baked at tempo)
+
+def _bass_voice(freq: float, n: int, slide_semis: float = 0.0) -> np.ndarray:
+    """Saw + detuned saw + sub-octave square, with an optional glide of `slide_semis` over the note."""
+    t = tvec(n)
+    glide = 2 ** (slide_semis * (t / max(t[-1], 1e-9)) / 12)
+    ph = np.cumsum(freq * glide) / SR
+    saw = (np.mod(ph, 1.0) * 2 - 1) + 0.7 * (np.mod(ph * 1.007 + 0.3, 1.0) * 2 - 1)
+    sq = np.sign(np.sin(2 * np.pi * ph / 2)) * 0.5
+    return lp(saw, 9000) + sq
+
+
+def riddim_note(freq: float, seconds: float, wonk: tuple[float, float] = (350, 1400), slide_semis: float = 0.0, q: float = 2.5, grit: float = 3.0) -> np.ndarray:
+    """One riddim bass note: heavy saturation, a formant band-pass that sweeps from wonk[0] to wonk[1] Hz over the
+    note, a steady low body, a short attack and a quick release so notes stay separate (the bounce)."""
+    n = int(seconds * SR)
+    t = tvec(n)
+    src = drive(_bass_voice(freq, n, slide_semis), grit)
+    sweep = wonk[0] * (wonk[1] / wonk[0]) ** (0.5 - 0.5 * np.cos(np.pi * np.clip(t / seconds, 0, 1)))
+    formant = swept_filter(src, sweep, q, kind="bandpass", stages=1)
+    body = swept_filter(src, np.full(n, 220.0), 0.8, kind="lowpass", stages=1)
+    x = drive(1.8 * formant + 0.9 * body, 1.6)
+    x += 0.6 * np.sin(2 * np.pi * np.cumsum(freq * 2 ** (slide_semis * (t / max(t[-1], 1e-9)) / 12)) / SR)   # sub follows the note
+    env = adsr(n, 0.003, 0.05, 0.9, 0.03)
+    return x * env
+
+
+def riddim_loop(root_hz: float, bars: int, bpm: float, notes: list[tuple], gap: float = 0.08) -> np.ndarray:
+    """A bass riff baked at tempo. notes: (step, length_steps, semitones, wonk_index or (lo,hi), slide_semis) with steps in
+    16ths; `gap` is the silence trimmed off the end of each note so the groove breathes."""
+    n = int(round(bars * 240 / bpm * SR))
+    step_s = 60 / bpm / 4
+    wonks = [(300, 1200), (420, 1900), (260, 900), (500, 2600), (380, 700)]
+    out = np.zeros(n)
+    for note in notes:
+        step, length, semis, wonk, slide = (list(note) + [0, 0, 0.0])[:5]
+        wk = wonks[int(wonk) % len(wonks)] if not isinstance(wonk, tuple) else wonk
+        seconds = max(0.04, length * step_s * (1 - gap))
+        x = riddim_note(root_hz * 2 ** (semis / 12), seconds, wk, slide)
+        i = int(round(step * step_s * SR))
+        m = min(len(x), n - i)
+        if m > 0:
+            out[i:i + m] += x[:m]
+    out = hp(out, 30)
+    return normalize(polish(out, [Compressor(threshold_db=-6, ratio=4)]), -1.0)
+
+
+def wonk_stab(freq: float, seconds: float = 0.42) -> np.ndarray:
+    return normalize(polish(riddim_note(freq, seconds, (300, 2400), 0.0, 3.0, 3.5), [Compressor(threshold_db=-6, ratio=4)]), -1.0)
+
+
+def laser(seconds: float = 0.5) -> np.ndarray:
+    """An FM stab whose pitch falls two octaves: the riddim 'pew'."""
+    n = int(seconds * SR)
+    t = tvec(n)
+    f = 1400 * 0.25 ** (t / seconds)
+    ph = np.cumsum(f) / SR
+    x = np.sin(2 * np.pi * ph + 3.0 * np.exp(-t / 0.15) * np.sin(2 * np.pi * ph * 1.5)) * np.exp(-t / 0.2)
+    return normalize(polish(drive(x, 1.8), [Reverb(room_size=0.4, wet_level=0.2, dry_level=0.8)]), -2.0)
+
+
+def yoi(freq: float, seconds: float = 0.6) -> np.ndarray:
+    """A formant bass stab that rises then falls in pitch: 'yoi'."""
+    n = int(seconds * SR)
+    t = tvec(n)
+    u = t / seconds
+    glide = 2 ** ((7 * np.sin(np.pi * u)) / 12)
+    ph = np.cumsum(freq * glide) / SR
+    src = drive((np.mod(ph, 1.0) * 2 - 1) + 0.5 * np.sign(np.sin(2 * np.pi * ph / 2)), 3.0)
+    sweep = 300 * (2800 / 300) ** (0.5 - 0.5 * np.cos(2 * np.pi * u))
+    x = drive(1.8 * swept_filter(src, sweep, 3.0, kind="bandpass", stages=1) + 0.8 * lp(src, 220), 1.5)
+    x += 0.5 * np.sin(2 * np.pi * ph)
+    return normalize(polish(x * adsr(n, 0.004, 0.1, 0.85, 0.08), [Compressor(threshold_db=-6, ratio=4)]), -1.0)
+
+
+def sub_drop(freq: float, bars: int, bpm: float) -> np.ndarray:
+    n = int(round(bars * 240 / bpm * SR))
+    t = tvec(n)
+    f = freq * (0.35) ** (t / t[-1])
+    x = np.sin(2 * np.pi * np.cumsum(f) / SR) * adsr(n, 0.01, 0.1, 1.0, 0.3)
+    return normalize(drive(x, 1.3), -1.0)
+
+
+def reverse_crash(bars: int, bpm: float) -> np.ndarray:
+    n = int(round(bars * 240 / bpm * SR))
+    t = tvec(n)
+    x = bp(noise(n), 2500, 11000) * (t / t[-1]) ** 2.5
+    x += 0.4 * metal(n, 10.0, 4000) * (t / t[-1]) ** 3
+    return normalize(polish(x, [Reverb(room_size=0.5, wet_level=0.2, dry_level=0.8)]), -3.0)
+
+
+def render_riddim_set(bpm: float, out_dir: str) -> list[dict]:
+    os.makedirs(out_dir, exist_ok=True)
+    F1 = midi_hz(29)
+    # riffs in 16ths over two bars: (step, length, semitones, wonk, slide)
+    riff_a = [(0, 2, 0, 0), (3, 2, 0, 1), (6, 1, 0, 2), (8, 2, 3, 0), (11, 2, 0, 3), (14, 1, -2, 1), (16, 2, 0, 0), (19, 2, 0, 1), (22, 1, 0, 2),
+              (24, 2, 5, 3), (27, 1, 3, 1), (28, 2, 0, 0), (30, 2, 0, 4, -12)]
+    riff_b = [(0, 3, 0, 1), (4, 2, 3, 0), (8, 1, 0, 2), (10, 1, 0, 2), (12, 3, -2, 3), (16, 3, 0, 1), (20, 2, 5, 0), (24, 2, 3, 2), (27, 1, 0, 1), (28, 3, 0, 4, -7)]
+    riff_c = [(0, 2, 0, 3), (6, 2, 0, 1), (12, 1, 3, 2), (14, 1, 5, 2), (16, 2, 0, 3), (22, 2, -2, 1), (28, 3, 0, 4, -12)]
+    fill = [(k * 2 / 3, 2 / 3, (0, 3, 5, 7, 5, 3)[k % 6], k % 5) for k in range(0, 36)] + [(24, 8, 0, 3, -24)]
+    fill = [n for n in fill if n[0] < 24] + [(24, 8, 0, 3, -24)]
+    items = [
+        ("riddim A", riddim_loop(F1, 2, bpm, riff_a), "bass", 29, ["riddim", "bass", "loop", "F1", "2bars"]),
+        ("riddim B", riddim_loop(F1, 2, bpm, riff_b), "bass", 29, ["riddim", "bass", "loop", "F1", "2bars"]),
+        ("riddim C", riddim_loop(F1, 2, bpm, riff_c), "bass", 29, ["riddim", "bass", "loop", "F1", "2bars", "sparse"]),
+        ("riddim fill", riddim_loop(F1, 2, bpm, fill), "bass", 29, ["riddim", "bass", "loop", "F1", "2bars", "fill"]),
+        ("wonk F1", wonk_stab(F1), "bass", 29, ["riddim", "bass", "stab", "F1"]), ("laser", laser(), "fx", None, ["fx", "stab", "laser"]),
+        ("yoi F1", yoi(F1), "bass", 29, ["riddim", "bass", "stab", "yoi"]), ("sub drop 1 bar", sub_drop(F1, 1, bpm), "fx", None, ["fx", "sub", "drop"]),
+        ("reverse crash 1 bar", reverse_crash(1, bpm), "fx", None, ["fx", "reverse", "crash", "1bar"]), ("riser 1 bar", riser(1, bpm), "fx", None, ["fx", "riser", "1bar"]),
+    ]
+    manifest = []
+    for name, audio, kind, note, tags in items:
+        path = os.path.join(out_dir, name.replace(" ", "_") + ".wav")
+        data = audio if audio.ndim == 2 else audio[:, None]
+        sf.write(path, np.clip(data, -1, 1).astype(np.float32), SR, subtype="PCM_16")
+        manifest.append({"name": name, "path": path, "kind": kind, "midi_note": note, "tags": tags, "frames": len(data), "seconds": round(len(data) / SR, 3), "channels": data.shape[1]})
+    with open(os.path.join(out_dir, "manifest.json"), "w") as f:
+        json.dump({"bpm": bpm, "samplerate": SR, "items": manifest}, f, indent=1)
+    return manifest
