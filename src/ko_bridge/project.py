@@ -353,10 +353,18 @@ def to_document(spec: ProjectSpec, base: bytes, frames_by_slot: dict[int, int], 
         roots[(pad.group, pad.pad)] = pad.root
         slots[(pad.group, pad.pad)] = pad.slot
         trim_end = pad.trim_end
-        if pad.slot and trim_end is None:
-            if pad.slot not in frames_by_slot:
-                raise ValueError(f"slot {pad.slot} has no known length; pass trim_end or let the device layer look the slot up")
-            trim_end = frames_by_slot[pad.slot]
+        if pad.slot and pad.slot in frames_by_slot:
+            # trim_end is a LENGTH from trim_start and start + length may not exceed the sample: the device silently resets
+            # such a pad to the whole sample and the readback then differs (measured 2026-10-17)
+            frames = frames_by_slot[pad.slot]
+            if pad.trim_start >= frames:
+                raise ValueError(f"pad {pad.group} {pad.pad}: trim_start {pad.trim_start} is at or beyond the end of slot {pad.slot} ({frames} frames)")
+            if trim_end is None:
+                trim_end = frames - pad.trim_start          # the rest of the sample, not the whole sample
+            elif pad.trim_start + trim_end > frames:
+                raise ValueError(f"pad {pad.group} {pad.pad}: trim_start {pad.trim_start} + trim_end {trim_end} exceeds slot {pad.slot}'s {frames} frames (trim_end is a length)")
+        elif pad.slot and trim_end is None:
+            raise ValueError(f"slot {pad.slot} has no known length; pass trim_end or let the device layer look the slot up")
         pads.append({"group": pad.group, "pad": pad_member_number(pad.pad), "slot": pad.slot, "trimStart": pad.trim_start,
                      "trimEnd": trim_end or 0, "sampleBpm": pad.sample_bpm, "amplitude": pad.amplitude, "pitch": pad.pitch,
                      "pan": pad.pan, "attack": pad.attack, "release": pad.release, "timeMode": TIME_MODES.index(pad.time_mode),
