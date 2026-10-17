@@ -147,10 +147,12 @@ def detect_chop_slices(
     if total_frames < num_slices * 64:
         raise ValueError(f"audio is too short ({total_frames} frames) to slice into {num_slices} chops")
 
-    # Detect both broadband transients and full-band energy onsets
+    # Detect both broadband transients and full-band energy onsets. The full-band detector reads 10 ms frames: with the
+    # default 2 ms frames the cycles of a sub-bass note (a 41 Hz tone swings 13 dB inside a frame) register as an onset
+    # every refractory period, which put accents inside sustained chords on the first chopped loop (2026-10-17).
     hp = an.transients(mono_sig, sr, cutoff_hz=1200.0)
     raw_onsets = an.all_onsets(hp, sr, rise_db=8.5, lookback_ms=40.0, refractory_ms=55.0, floor_db=-55.0)
-    full_onsets = an.all_onsets(mono_sig, sr, rise_db=7.5, lookback_ms=45.0, refractory_ms=65.0, floor_db=-50.0)
+    full_onsets = an.all_onsets(mono_sig, sr, rise_db=7.5, lookback_ms=45.0, refractory_ms=65.0, floor_db=-50.0, win_ms=10.0)
     candidates = sorted(set([0] + raw_onsets + full_onsets))
 
     snap_tol = int(0.035 * sr)  # 35 ms transient snap window
@@ -215,15 +217,24 @@ def detect_chop_slices(
         remaining = num_slices - n_grid
         if remaining > 0:
             n_accents = max(0, remaining - 1) if reverse_last_pad else remaining
-            # Pick transient accents that don't duplicate existing grid_starts
-            win = max(64, int(0.15 * sr))
+            # Accents start on attacks: candidates are the high-passed transients (the full-band detector also fires on
+            # swells and on bass cycles), away from the grid starts, scored by the level of the 60 ms that follow and
+            # kept a whole accent apart so no two pads hold the same moment.
+            win = max(64, int(0.06 * sr))
             accent_len = max(int(0.25 * sr), int(grid_step * 0.5))
+            pool_source = raw_onsets if len(raw_onsets) >= n_accents else candidates
             accent_pool: list[tuple[float, int]] = []
-            for c in candidates:
+            for c in pool_source:
                 if all(abs(c - gs) > int(0.04 * sr) for gs in grid_starts[:-1]) and c + 256 < total_frames:
                     accent_pool.append((an.rms_db(mono_sig[c: min(total_frames, c + win)]), c))
             accent_pool.sort(reverse=True)
-            chosen_accents = sorted(c for _r, c in accent_pool[:n_accents])
+            chosen_accents: list[int] = []
+            for _r, c in accent_pool:
+                if all(abs(c - k) >= accent_len for k in chosen_accents):
+                    chosen_accents.append(c)
+                if len(chosen_accents) == n_accents:
+                    break
+            chosen_accents.sort()
             while len(chosen_accents) < n_accents:
                 fallback = int(round((len(chosen_accents) + 0.5) * grid_step))
                 chosen_accents.append(min(total_frames - accent_len, max(0, fallback)))

@@ -74,7 +74,7 @@ PROJECT_FORMAT = """write_project spec (JSON):
                 "lanes": [ {"parameter": "lowpass", "points": [ {"step": 0, "value": 1.0}, {"step": 15.5, "value": 0.4} ]} ]} ],
  "scene": {"patterns": {"C": 1}, "time_signature": [4, 4]},   // optional; defaults to the written patterns, other groups keep scene 1
  "fader_bases": [ {"group": "C", "parameter": "fx", "value": 0.3} ],
- "fx": {"type": "reverb", "x": 0.4, "y": 0.5, "output_compressor_drive": 0.2}
+ "fx": {"type": "reverb", "x": 0.4, "y": 0.5, "output_compressor_drive": 0.2, "clear_sidechain": true}   // the slot's routing survives a write unless cleared or replaced
 }
 step = 16th notes from the pattern start (24 ticks); tick is the alternative (96 per beat, 384 per bar). trim_start is the
 first frame and trim_end the trimmed LENGTH in frames, both at the sample's native rate (the device stores a length and

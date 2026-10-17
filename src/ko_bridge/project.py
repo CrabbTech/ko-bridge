@@ -193,6 +193,7 @@ class FxSpec(BaseModel):
     sidechain_destinations: list[Group] = Field(default=[], description="groups that get ducked")
     sidechain_length: float | None = Field(default=None, ge=0, le=1, description="duck length (SHIFT+FX knob X)")
     sidechain_shape: float | None = Field(default=None, ge=0, le=1, description="duck shape (SHIFT+FX knob Y)")
+    clear_sidechain: bool = Field(default=False, description="write an empty routing (no source pads, no ducked groups): without this or explicit sources/destinations the slot's current routing survives a write, so a pad reused on a former source pad keeps ducking")
 
 
 class FaderBase(BaseModel):
@@ -467,7 +468,7 @@ def to_document(spec: ProjectSpec, base: bytes, frames_by_slot: dict[int, int], 
         comp = {k: v for k, v in (("drive", spec.fx.output_compressor_drive), ("speed", spec.fx.output_compressor_speed)) if v is not None}
         if comp:
             fx["outputCompressor"] = comp
-        if spec.fx.sidechain_sources or spec.fx.sidechain_destinations:
+        if spec.fx.sidechain_sources or spec.fx.sidechain_destinations or spec.fx.clear_sidechain:
             routing: dict[str, dict[str, Any]] = {g: {"sourcePads": [], "destination": False} for g in "ABCD"}   # unnamed groups are cleared
             for src in spec.fx.sidechain_sources:
                 routing.setdefault(src.group, {}).setdefault("sourcePads", []).append(pad_member_number(src.pad))
